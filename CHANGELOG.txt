@@ -1,3 +1,9 @@
+v11.2.2 (reliability fixes)
+* FOD HBM: watchdog timeouts are token-gated and cancelled/reaped before a new HBM session, so an old timer cannot turn off a newer fingerprint glow. MAX_S and the battery-temperature cutoff are unchanged.
+* FOD/SOFOD: fod_service.sh and sofod_touch.sh now use the shared single-instance guard; lib.sh ignores stale or unrelated PIDs. Removed the broad pkill from sofod_touch.sh. Reboot after an in-place update so pre-guard helpers stop.
+* Performance: background dexopt may run during AOD/Dozing as well as Asleep, still gated by charging or battery >= 40%. Failed job attempts retry instead of marking the version complete.
+* CI: host-side regression tests and bash/dash syntax checks run on PRs/main and before release. No wake-order, PROP_WAIT, governor, HAL patch, or refresh-rate changes.
+
 v11.2.1 (hotfix: screen-off FOD regression in v11.2)
 * Wake order restored to v11.1 (KEYCODE_WAKEUP first); the cmd-power-first path is now optional (WAKE_FAST=1 in dt2w.conf).
 * resetprop -w waits are OFF by default (PROP_WAIT=0 = v11.1 polling) and, when enabled, measure real elapsed time.
