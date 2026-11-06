@@ -8,6 +8,8 @@ It checks the module layout, packages the tracked module files into a flashable
 ZIP (with `module.prop` and `META-INF` at the ZIP root), and publishes a GitHub
 Release. GitHub configuration and untracked build artifacts are excluded.
 
+- Release titles are `x6886 aosp gsi patch`, independently of the module's
+  internal name. The version and commit details remain in the release notes.
 - Release tags combine the `module.prop` version and commit SHA, for example
   `v11.2.1-39139a3`, so commits with the same module version get separate releases.
 - Several commits in one push produce one release for the pushed HEAD commit.
