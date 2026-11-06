@@ -69,7 +69,7 @@ jobs:
           SAFE_VERSION="$(printf '%s' "${VERSION#v}" | tr -c 'A-Za-z0-9._-' '-')"
           TAG="v${SAFE_VERSION}-${SHORT_SHA}"
           ZIP_NAME="X6886GSIPATCH-${TAG}.zip"
-          TITLE="${MODULE_NAME} (${SHORT_SHA})"
+          TITLE='x6886 aosp gsi patch'
           {
             printf 'version=%s\n' "$VERSION"
             printf 'version_code=%s\n' "$VERSION_CODE"
