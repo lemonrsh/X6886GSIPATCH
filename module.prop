@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh v11.2.1 FIX
-version=v11.2.1
-versionCode=113
+name=X6886 GSI PATCH by lemonrsh v11.2.2 FIX
+version=v11.2.2
+versionCode=114
 author=lemonrsh
-description=X6886 GSI patch v11.2: stricter, lighter AOD double-tap wake (position/movement checks, wake gated on screen state), event-driven FOD waits, adaptive download-lag fix, lighter 120 Hz controller; retains FOD and performance components.
+description=X6886 GSI patch v11.2.2: safer HBM watchdog cancellation, single-instance FOD/SOFOD helpers, AOD-aware idle dexopt; retains the v11.2.1 wake path, thermal cutoff, and performance defaults.

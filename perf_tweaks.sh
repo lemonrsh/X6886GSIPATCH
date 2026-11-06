@@ -47,17 +47,34 @@ if [ "$VM_DIRTY" = 1 ]; then
   echo "vm dirty caps set (bg 64M / hard 256M)" >> $LOG
 fi
 # v10: dex2oat/odrefresh/artd deprioritising moved to dlfix.sh (one place, no double work)
+# --- dexopt idle helpers (regression-tested by .github/tests/test_fixes.py) ---
+dexopt_screen_idle() {
+  # AOD commonly reports Dozing rather than Asleep. Both are idle enough for the
+  # framework's background dexopt job; Awake/Dreaming/unknown states are not.
+  _dex_state=$(dumpsys power 2>/dev/null | sed -n 's/.*mWakefulness=\([A-Za-z]*\).*/\1/p' | head -n 1)
+  case "$_dex_state" in Asleep|Dozing) return 0 ;; *) return 1 ;; esac
+}
+dexopt_power_ok() {
+  _dex_lvl=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null)
+  case "$_dex_lvl" in ''|*[!0-9]*) _dex_lvl=0 ;; esac
+  dumpsys battery 2>/dev/null | grep -q 'powered: true' && return 0
+  [ "$_dex_lvl" -ge 40 ]
+}
+# --- end dexopt idle helpers ---
 if [ "$DEXOPT" = 1 ]; then
   VC=$(sed -n 's/^versionCode=//p' "$MODDIR/module.prop" 2>/dev/null); FL=$D/dexopt.$VC
   if [ ! -f "$FL" ]; then
     ( n=0
       while [ $n -lt 144 ]; do   # up to 12 h, check every 5 min
         sleep 300; n=$((n+1))
-        dumpsys power 2>/dev/null | grep -q "mWakefulness=Asleep" || continue
-        lvl=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null); chg=$(dumpsys battery 2>/dev/null | grep -c "powered: true")
-        [ "$chg" -gt 0 ] || [ "${lvl:-0}" -ge 40 ] || continue
-        echo "$(date +%T) dexopt start" >> $LOG; cmd package bg-dexopt-job >/dev/null 2>&1
-        echo "$(date +%T) dexopt job queued" >> $LOG; touch "$FL"; break
+        dexopt_screen_idle || continue
+        dexopt_power_ok || continue
+        echo "$(date +%T) dexopt start (screen idle)" >> $LOG
+        if cmd package bg-dexopt-job >/dev/null 2>&1; then
+          echo "$(date +%T) dexopt job queued" >> $LOG; touch "$FL"; break
+        else
+          echo "$(date +%T) dexopt job failed; will retry" >> $LOG
+        fi
       done ) &
   fi
 fi

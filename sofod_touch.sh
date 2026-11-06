@@ -2,6 +2,7 @@
 # X6886 screen-off FOD touch recovery v8
 # Replays the held sensor touch after the panel wakes; verifies SystemUI registration
 # and retries only when the previous synthetic touch was not accepted.
+MODDIR=${0%/*}
 D=/data/adb/fod
 LOG=$D/sofod_touch.log
 DELAY=0.08
@@ -15,6 +16,8 @@ PANEL_WAIT_MS=1200
 DPMS=/sys/class/drm/card0-DSI-1/dpms
 FLAG=$D/.sofod_busy
 mkdir -p "$D"
+# Guard before touching logs/input: duplicate watchers can replay the same FOD touch twice.
+[ -f "$MODDIR/lib.sh" ] && . "$MODDIR/lib.sh" && single_instance sofod_touch
 [ -f "$D/sofod_touch.conf" ] && . "$D/sofod_touch.conf"
 
 log() {
@@ -130,8 +133,9 @@ refire() {
   rm -f "$FLAG"
 }
 
-# Avoid duplicate watchers. The flag is per-trigger and expires if a previous run was killed.
-pkill -f "logcat -b all -T 1 -v brief oplus_udfps_transsion" 2>/dev/null
+# The single-instance guard above replaces the old broad pkill. Reboot after an
+# in-place module update so any pre-guard watcher from the old install is stopped.
+# The flag is per-trigger and expires if a previous run was killed.
 rm -f "$FLAG"
 log "watcher v8 started dev=$DEV delay=$DELAY hold=$HOLD tries=$TRIES"
 

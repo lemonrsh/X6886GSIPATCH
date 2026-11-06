@@ -1,5 +1,7 @@
 #!/system/bin/sh
 MODDIR=${0%/*}
+# Guard before spawning helpers: a manual/service re-run must not duplicate the HBM driver.
+[ -f "$MODDIR/lib.sh" ] && . "$MODDIR/lib.sh" && single_instance fod_service
 # Refresh controller is launched earlier by post-fs-data.sh.
 [ -f "$MODDIR/sofod_touch.sh" ] && ( while true; do sh "$MODDIR/sofod_touch.sh" >/dev/null 2>&1; sleep 3; done & )
 NODE=/sys/kernel/tran_display/lcm_hbm_state
@@ -67,16 +69,50 @@ hot() { t=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); [ -n "$t" ] &
 # the HAL's touch thread reads EV_KEY 195: value 1 = finger down (starts capture), value 0 = finger up
 inject() { sendevent $DEV 1 195 $1 >/dev/null 2>&1; sendevent $DEV 0 0 0 >/dev/null 2>&1; }
 [ "$INJECT195" = 1 ] && inject 0
-echo 0 > $NODE; log "driver start dev=$DEV inject195=$INJECT195 fastfilter=$FILTER_OK"
-ON=0; WD=""; KL=0; LC=0
-hbm_off() { [ -n "$WD" ] && kill $WD 2>/dev/null; WD=""; echo 0 > $NODE; ON=0; }
+# --- HBM safety helpers (regression-tested by .github/tests/test_fixes.py) ---
+ON=0; WD=""; KL=0; LC=0; HBM_SEQ=0
+HBM_TOKEN_FILE=$D/.hbm.token
+hbm_invalidate() {
+  HBM_SEQ=$((HBM_SEQ+1))
+  HBM_TOKEN=""
+  [ -r /proc/sys/kernel/random/uuid ] && read -r HBM_TOKEN < /proc/sys/kernel/random/uuid
+  case "$HBM_TOKEN" in
+    ''|*[!0-9a-fA-F-]*) read -r _u _ < /proc/uptime; HBM_TOKEN="${_u}-$$-$HBM_SEQ" ;;
+  esac
+  printf '%s\n' "$HBM_TOKEN" > "$HBM_TOKEN_FILE"
+}
+hbm_cancel() {
+  # Invalidate first, then stop/reap the old watchdog. Even if kill cannot stop an
+  # orphaned sleep child, that child can no longer pass the token check below.
+  hbm_invalidate
+  if [ -n "$WD" ]; then
+    kill "$WD" 2>/dev/null || true
+    wait "$WD" 2>/dev/null || true
+    WD=""
+  fi
+}
+hbm_timeout() {
+  [ "$(cat "$HBM_TOKEN_FILE" 2>/dev/null)" = "$1" ] || return 0
+  echo 0 > "$NODE"
+}
+hbm_start_watchdog() {
+  ( sleep "$MAX_S"; hbm_timeout "$1" ) & WD=$!
+}
+hbm_off() {
+  hbm_cancel
+  echo 0 > "$NODE"
+  ON=0
+}
 hbm_on() {
   if hot; then log "skip: battery hot"; return 1; fi
-  echo 1 > $NODE; ON=1
-  [ -n "$WD" ] && kill $WD 2>/dev/null
-  ( sleep $MAX_S; echo 0 > $NODE ) & WD=$!
+  hbm_cancel
+  echo 1 > "$NODE"
+  ON=1
+  hbm_start_watchdog "$HBM_TOKEN"
   return 0
 }
+# --- end HBM safety helpers ---
+hbm_off; log "driver start dev=$DEV inject195=$INJECT195 fastfilter=$FILTER_OK"
 # v11.2: event-driven waits. `resetprop -w NAME OLD` blocks until NAME differs from OLD, so the shell no longer
 # forks getprop every 20-30 ms. Auto-detected at start; falls back to the old polling when unsupported.
 PROPWAIT=0
