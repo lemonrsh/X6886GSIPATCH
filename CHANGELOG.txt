@@ -1,0 +1,33 @@
+v11.2.1 (hotfix: screen-off FOD regression in v11.2)
+* Wake order restored to v11.1 (KEYCODE_WAKEUP first); the cmd-power-first path is now optional (WAKE_FAST=1 in dt2w.conf).
+* resetprop -w waits are OFF by default (PROP_WAIT=0 = v11.1 polling) and, when enabled, measure real elapsed time.
+* service.sh no longer uses setsid.
+
+v11.2 (on top of v11.1)
+=======================
+Double-tap wake (dt2w.sh)
+* Listener output is prefiltered (grep) before the gesture detector.
+* Double tap now also needs: both taps within MAX_DIST_PX of each other, no swipe-like travel (MAX_MOVE_PX),
+  a short first tap (TAP_HOLD_MS), and no second finger. Swipes and scrolls no longer count.
+* Ignored while sofod_touch.sh is injecting synthetic FOD touches (/data/adb/fod/.sofod_busy).
+* Does nothing when the screen is already awake (GATE_AWAKE=1) - no more spurious wake-ups/user-activity.
+* Wake path: `cmd power wake-up` first (no JVM start); KEYCODE_WAKEUP only as fallback if still not awake.
+* Debounce 1 s (was 2 s). Log rotation (60 KB). Clean shutdown trap. Touch-node-moved watchdog.
+* Tunables: /data/adb/fod/dt2w.conf.
+FOD (fod_service.sh)
+* Fingerprint press/release waits use `resetprop -w` (event driven) instead of forking getprop every 20-30 ms.
+  Auto-detected; falls back to polling if unsupported (see "event-driven prop waits" in hbm.log). PROP_WAIT=0 disables.
+Refresh (refresh.sh)
+* Also sets min/peak_refresh_rate=120 via settings (SETTINGS_RATE=1). Re-applies on SurfaceFlinger restart
+  (checked through /proc, no forks) plus a slow safety reconcile (RECONCILE_S, default 120 s, was 30 s).
+Download lag (dlfix.sh)
+* Adaptive: Play Store / Wi-Fi thread throttling only while CPU or IO pressure (PSI some avg10) is >= PSI_CPU / PSI_IO
+  (default 8 %), held for HOLD_S. dex2oat/artd handling is unchanged. Idle poll every INTERVAL_IDLE s.
+Structure / cleanup
+* service.sh: parts staggered 1 s, started detached (setsid); lib.sh adds single-instance guards (dlfix, perf_tweaks, dt2w).
+* messenger_bg.sh reads KEEP_PKGS from /data/adb/fod/bg.conf (removed the unused KEEP_PKGS from refresh.conf).
+* Busy flag moved from /data/local/tmp to /data/adb/fod.
+* customize.sh: fixed the literal "\n" in the installer output; skip_hashcheck escape hatch (HAL patch stays off).
+* diag.sh: removed stale capfix output; added wakefulness/touch-node/refresh settings; `sh diag.sh bundle` makes /sdcard/x6886_diag.tar.gz.
+* uninstall.sh resets min/peak_refresh_rate.
+Not done: native (C) event helper - needs an aarch64 toolchain and on-device testing.

@@ -1,0 +1,5 @@
+# Screen-off FOD: let the fingerprint HAL arm the touch IC and read its TEE prop
+allow hal_fingerprint_default proc_fingerprint_status file { open read write getattr setattr }
+allow hal_fingerprint_default proc_gesture_function file { open read write getattr setattr }
+allow hal_fingerprint_default vendor_tr_teeos_prop file { open read getattr map }
+allow system_suspend sysfs file { open read getattr }
