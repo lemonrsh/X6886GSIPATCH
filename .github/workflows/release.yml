@@ -1,0 +1,185 @@
+name: Release Magisk module
+
+# One release per push to main (including pushes containing several commits).
+# Also available manually under Actions > Release Magisk module > Run workflow.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Allow releases for different commits to run independently; serialize reruns
+# of the same commit so they cannot upload to the same release simultaneously.
+concurrency:
+  group: magisk-release-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate module and prepare release
+        id: module
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for file in module.prop META-INF/com/google/android/update-binary \
+                      META-INF/com/google/android/updater-script \
+                      customize.sh post-fs-data.sh service.sh; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Missing required module file: $file"
+              exit 1
+            fi
+          done
+
+          if [[ "$(head -n 1 META-INF/com/google/android/updater-script | tr -d '\r')" != '#MAGISK' ]]; then
+            echo '::error::updater-script must start with #MAGISK'
+            exit 1
+          fi
+
+          # Read manifest values without sourcing/evaluating module.prop.
+          prop() {
+            awk -v key="$1" 'index($0, key "=") == 1 { sub(/^[^=]*=/, ""); sub(/\r$/, ""); print; exit }' module.prop
+          }
+          MODULE_NAME="$(prop name)"
+          VERSION="$(prop version)"
+          VERSION_CODE="$(prop versionCode)"
+          if [[ -z "$MODULE_NAME" || -z "$VERSION" || ! "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
+            echo '::error::module.prop needs name, version, and a numeric versionCode'
+            exit 1
+          fi
+
+          for script in ./*.sh META-INF/com/google/android/update-binary; do
+            bash -n "$script"
+          done
+
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          SAFE_VERSION="$(printf '%s' "${VERSION#v}" | tr -c 'A-Za-z0-9._-' '-')"
+          TAG="v${SAFE_VERSION}-${SHORT_SHA}"
+          ZIP_NAME="X6886GSIPATCH-${TAG}.zip"
+          TITLE="${MODULE_NAME} (${SHORT_SHA})"
+          {
+            printf 'version=%s\n' "$VERSION"
+            printf 'version_code=%s\n' "$VERSION_CODE"
+            printf 'tag=%s\n' "$TAG"
+            printf 'zip_name=%s\n' "$ZIP_NAME"
+            printf 'title=%s\n' "$TITLE"
+          } >> "$GITHUB_OUTPUT"
+          echo "Preparing $TAG"
+
+      - name: Build flashable Magisk ZIP
+        id: package
+        shell: bash
+        env:
+          ZIP_NAME: ${{ steps.module.outputs.zip_name }}
+        run: |
+          set -euo pipefail
+          ZIP_PATH="$RUNNER_TEMP/$ZIP_NAME"
+
+          # Store executable permissions in the ZIP; Magisk also sets the
+          # installed HAL/library permissions in customize.sh.
+          chmod 0755 ./*.sh META-INF/com/google/android/update-binary
+          chmod 0755 system/vendor/bin/hw/android.hardware.biometrics.fingerprint-service
+
+          # Package tracked files only, directly at the ZIP root (no wrapping
+          # repository folder). Exclude GitHub configuration and Git metadata.
+          git ls-files -z -- \
+            ':(exclude).github' ':(exclude).github/**' \
+            ':(exclude).gitignore' ':(exclude).gitattributes' \
+            | xargs -0 -r zip -q "$ZIP_PATH" --
+
+          # Check archive integrity and the layout Magisk expects before releasing.
+          python3 - "$ZIP_PATH" <<'PY'
+          import pathlib
+          import sys
+          import zipfile
+
+          required = {
+              "module.prop",
+              "META-INF/com/google/android/update-binary",
+              "META-INF/com/google/android/updater-script",
+              "customize.sh",
+              "post-fs-data.sh",
+              "service.sh",
+          }
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              names = archive.namelist()
+              missing = required.difference(names)
+              if missing:
+                  sys.exit(f"Missing ZIP-root entries: {sorted(missing)}")
+              if len(names) != len(set(names)):
+                  sys.exit("ZIP contains duplicate entries")
+              for name in names:
+                  path = pathlib.PurePosixPath(name)
+                  if path.is_absolute() or ".." in path.parts or path.parts[0] in {".git", ".github"}:
+                      sys.exit(f"Unexpected ZIP entry: {name}")
+              if archive.testzip() is not None:
+                  sys.exit("ZIP integrity check failed")
+              installer = archive.getinfo("META-INF/com/google/android/update-binary")
+              if not (installer.external_attr >> 16) & 0o111:
+                  sys.exit("update-binary is not executable")
+          print(f"Validated {len(names)} files at the ZIP root")
+          PY
+
+          SHA256="$(sha256sum "$ZIP_PATH" | cut -d ' ' -f 1)"
+          printf 'zip_path=%s\n' "$ZIP_PATH" >> "$GITHUB_OUTPUT"
+          printf 'sha256=%s\n' "$SHA256" >> "$GITHUB_OUTPUT"
+          ls -lh "$ZIP_PATH"
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          TAG: ${{ steps.module.outputs.tag }}
+          TITLE: ${{ steps.module.outputs.title }}
+          VERSION: ${{ steps.module.outputs.version }}
+          VERSION_CODE: ${{ steps.module.outputs.version_code }}
+          ZIP_NAME: ${{ steps.module.outputs.zip_name }}
+          ZIP_PATH: ${{ steps.package.outputs.zip_path }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          NOTES="$RUNNER_TEMP/release-notes.md"
+          cat > "$NOTES" <<EOF
+          Flash **$ZIP_NAME** in Magisk, then reboot.
+
+          - Version: $VERSION
+          - Version code: $VERSION_CODE
+          - Commit: $GITHUB_SHA
+          - ZIP SHA-256: \`$SHA256\`
+
+          The installer still checks that the device has a supported Goodix HAL.
+          EOF
+
+          # A rerun for the same commit refreshes its existing release instead
+          # of failing on an existing tag or creating a duplicate release.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            TARGET="$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)"
+            if [[ "$TARGET" != "$GITHUB_SHA" ]]; then
+              echo "::error::$TAG already belongs to a different commit; refusing to overwrite it"
+              exit 1
+            fi
+            gh release upload "$TAG" "$ZIP_PATH" --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES"
+          else
+            gh release create "$TAG" "$ZIP_PATH" \
+              --target "$GITHUB_SHA" \
+              --title "$TITLE" \
+              --notes-file "$NOTES" \
+              --latest
+          fi
+
+          URL="$(gh release view "$TAG" --json url --jq .url)"
+          printf '### Magisk module released\n\n[%s](%s)\n\nSHA-256: `%s`\n' "$ZIP_NAME" "$URL" "$SHA256" >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL"
