@@ -8,6 +8,15 @@ MODDIR=${0%/*}
 [ -f "$MODDIR/refresh.sh" ] && ( sh "$MODDIR/refresh.sh" >/dev/null 2>&1 & )
 # boot counter (safe mode, see post-fs-data.sh): reset once the phone is up for 20 s past boot completed
 ( while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done; sleep 20; echo 0 > /data/adb/fod/bootcount ) &
+# v11.2.4: VoWiFi / WiFi Calling persistent enable (PHH GSI + MediaTek vendor)
+# Set during early boot before persist props become read-only.
+( while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done
+  sleep 5
+  setprop persist.sys.phh.ims.aosp true 2>/dev/null
+  settings put global wifi_calling 1 2>/dev/null
+  settings put global volte_provisioned 1 2>/dev/null
+  echo "$(date +%T) VoWiFi: persist.sys.phh.ims.aosp=true, wifi_calling=1" >> /data/adb/fod/gsi.log 2>/dev/null
+) &
 (
   for part in fod_service.sh dt2w.sh dlfix.sh perf_tweaks.sh messenger_bg.sh otp_autofix.sh; do
     if [ -f "$MODDIR/$part" ]; then

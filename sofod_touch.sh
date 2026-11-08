@@ -19,6 +19,11 @@ mkdir -p "$D"
 # Guard before touching logs/input: duplicate watchers can replay the same FOD touch twice.
 [ -f "$MODDIR/lib.sh" ] && . "$MODDIR/lib.sh" && single_instance sofod_touch
 [ -f "$D/sofod_touch.conf" ] && . "$D/sofod_touch.conf"
+[ -f "$D/hbm.conf" ] && . "$D/hbm.conf"
+# v11.2.4: FOD position for synthetic touch replay. From hbm.conf (installer addkey)
+# or override in sofod_touch.conf. Your device: 540,2210.
+FOD_POS_X=${FOD_POS_X:-540}
+FOD_POS_Y=${FOD_POS_Y:-2210}
 
 log() {
   echo "$(date +%T) $*" >> "$LOG"
@@ -167,6 +172,9 @@ while true; do
         fi
         x=$(echo "$line" | sed -n 's/.*held at (\([0-9][0-9]*\), *\([0-9][0-9]*\)).*/\1/p')
         y=$(echo "$line" | sed -n 's/.*held at (\([0-9][0-9]*\), *\([0-9][0-9]*\)).*/\2/p')
+        # Fallback to configured FOD position when logcat doesn't report coords
+        [ -z "$x" ] && x=$FOD_POS_X
+        [ -z "$y" ] && y=$FOD_POS_Y
         case "$x:$y" in *[!0-9:]*|:*) continue;; esac
         : > "$FLAG"
         refire "$x" "$y" &

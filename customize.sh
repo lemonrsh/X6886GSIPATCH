@@ -87,6 +87,11 @@ fi
 addkey() { grep -q "^$2=" "$1" 2>/dev/null || echo "$2=$3" >> "$1"; }
 addkey "$DATA/fod/hbm.conf" WAIT_SO 80
 addkey "$DATA/fod/hbm.conf" FAST_FILTER 1
+# v11.2.4: FOD position (x,y) for synthetic touch replay.
+# Set from your device: FOD touch at (540, 2210).
+# Override in /data/adb/fod/hbm.conf or sofod_touch.conf if needed.
+addkey "$DATA/fod/hbm.conf" FOD_POS_X 540
+addkey "$DATA/fod/hbm.conf" FOD_POS_Y 2210
 addkey "$DATA/fod/gsi.conf" VM_DIRTY 1
 addkey "$DATA/fod/gsi.conf" DEX_INSTALL_VERIFY 1
 addkey "$DATA/fod/gsi.conf" FAST_FIRST_BOOT 1
