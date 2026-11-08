@@ -155,7 +155,7 @@ press() {   # BTN_TOUCH went down
   INJ=0
   if [ "$INJECT195" = 1 ]; then sleep $LEAD_S; inject 1; INJ=1; log "injected key195 down"; fi
   hold_fp $MAX_N
-  if [ "$INJ" = 1 ]; then inject 0; log "injected key195 up"; fi
+  if [ "$INJECT195" = 1 ]; then inject 0; log "injected key195 up"; fi
   hbm_off; log "HBM off (held=$n)"
 }
 handle() {  # $1=type $2=code $3=value (hex, as printed by getevent)
