@@ -1,15 +1,6 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD double tap wake performance and many fixes on aosp gsi running on x6886
 
-## v11.2.3 — screen-off FOD unlock fix for Android 16 GSI
-
-- Screen-off FOD wakes and opens the FOD UI on Android 16 GSI but never unlocked: `fod_service.sh` aborted the
-  press cycle when `sys.phh.oplus.fppress` was not reported within the budget. It now attempts one guarded
-  key-195 capture cycle (HBM on → inject → fixed hold → inject up → HBM off) instead. The `fppress` path is
-  untouched, so Android 17 behaviour is unchanged.
-- `sofod_touch.sh` gets one delayed press-confirmation attempt before giving up on a screen-off replay.
-- New optional `FALLBACK_HOLD_S=1` in `/data/adb/fod/hbm.conf` (hold seconds for the fallback cycle).
-
 ## v11.2.2 reliability fixes
 
 - HBM watchdog timeouts are token-gated and cancelled/reaped before a newer
