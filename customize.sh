@@ -7,7 +7,7 @@ N12="22467890811df0e2212e3947a490f0030cd74379e271ef6f654aaaa6433e103e"
 N123="28ac013c65c32cbb55c682e66d9fc0e26a7f82a9cbfb7c26a57f512cc3104c84"
 DATA=${FODDATA:-/data/adb}
 # Stop any watcher left running by an older release before replacing the module.
-for pid in $(ps -A -o PID,ARGS 2>/dev/null | awk 'NR>1 && /\/screentime\.sh([[:space:]]|$)/ {print $1}'); do
+for pid in $(ps -A -o PID,ARGS 2>/dev/null | awk 'NR>1 && /\\/screentime\\.sh([[:space:]]|$)/ {print $1}'); do
   kill "$pid" 2>/dev/null
 done
 CUR=$(sha256sum /odm/lib64/libgf_hal.so 2>/dev/null | cut -d' ' -f1)
@@ -87,12 +87,6 @@ fi
 addkey() { grep -q "^$2=" "$1" 2>/dev/null || echo "$2=$3" >> "$1"; }
 addkey "$DATA/fod/hbm.conf" WAIT_SO 80
 addkey "$DATA/fod/hbm.conf" FAST_FILTER 1
-addkey "$DATA/fod/hbm.conf" FALLBACK_HOLD_S 1
-# v11.2.4: FOD position (x,y) for synthetic touch replay.
-# Set from your device: FOD touch at (540, 2210).
-# Override in /data/adb/fod/hbm.conf or sofod_touch.conf if needed.
-addkey "$DATA/fod/hbm.conf" FOD_POS_X 540
-addkey "$DATA/fod/hbm.conf" FOD_POS_Y 2210
 addkey "$DATA/fod/gsi.conf" VM_DIRTY 1
 addkey "$DATA/fod/gsi.conf" DEX_INSTALL_VERIFY 1
 addkey "$DATA/fod/gsi.conf" FAST_FIRST_BOOT 1

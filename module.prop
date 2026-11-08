@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh v11.2.5 FIX
-version=v11.2.5
-versionCode=116
+name=X6886 GSI PATCH by lemonrsh v11.2.2 FIX
+version=v11.2.2
+versionCode=114
 author=lemonrsh
-description=X6886 GSI patch v11.2.5: screen-off FOD unlock fallback - when sys.phh.oplus.fppress is not reported after a screen-off wake, fod_service.sh press() now runs one guarded key-195 capture cycle instead of giving up. Keeps v11.2.4 FOD position config, VoWiFi persistent enable, and ghost touch fixes.
+description=X6886 GSI patch v11.2.2: safer HBM watchdog cancellation, single-instance FOD/SOFOD helpers, AOD-aware idle dexopt; retains the v11.2.1 wake path, thermal cutoff, and performance defaults.

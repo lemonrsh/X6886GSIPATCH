@@ -10,7 +10,6 @@ ENABLED=1; HAL_PATCH=12; MAX_S=3; MAX_N=60; TEMP_MAX=430; WAIT_N=30; KEYLOG=40; 
 WAIT_SO=80      # v7: wait (x10 ms) for SystemUI to report the press when it was injected by sofod_touch (screen-off wake is slow)
 PROP_WAIT=0     # v11.2.1: 1 = experimental resetprop -w waits instead of polling getprop (default OFF = v11.1 behaviour)
 FAST_FILTER=1   # v7: pre-filter touch events with grep (0 = old slow shell loop)
-FALLBACK_HOLD_S=1   # v11.2.5: seconds to keep key 195 down when fppress is never reported (screen-off FOD wakes but never unlocks)
 mkdir -p $D
 [ -f $D/hbm.conf ] && . $D/hbm.conf
 while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done
@@ -115,7 +114,7 @@ hbm_on() {
 # --- end HBM safety helpers ---
 hbm_off; log "driver start dev=$DEV inject195=$INJECT195 fastfilter=$FILTER_OK"
 # v11.2: event-driven waits. `resetprop -w NAME OLD` blocks until NAME differs from OLD, so the shell no longer
-# forks getprop every 20-30 ms. Auto-detected at start; falls back to the old polling when unsupported.
+# forks getprop every 20-30 ms. Auto-detected at start; falls back to polling if unsupported.
 PROPWAIT=0
 if [ "$PROP_WAIT" != 0 ] && command -v timeout >/dev/null 2>&1 && timeout 2 resetprop -w sys.boot_completed 0 >/dev/null 2>&1; then
   timeout 0.1 sleep 1 >/dev/null 2>&1; [ $? = 124 ] && PROPWAIT=1   # fractional timeout must really work
@@ -150,25 +149,12 @@ press() {   # BTN_TOUCH went down
   [ "$ON" = 0 ] || return
   W=$WAIT_N; [ -f $SOFLAG ] && W=$WAIT_SO
   wait_fp1 $W
-  FPSEEN=0
-  [ "$(getprop sys.phh.oplus.fppress)" = 1 ] && FPSEEN=1
-  if [ "$FPSEEN" = 1 ]; then
-    log "finger on sensor (fppress, waited $i) -> HBM on"
-  else
-    # Screen-off wake: fppress not reported (Android 16 GSI). The FOD UI opens
-    # but the HAL never starts capture, so the finger never unlocks. Attempt
-    # one guarded key-195 capture cycle anyway. On Android 17 fppress is
-    # reported in time, so this branch is not taken and behaviour is unchanged.
-    log "screen-off wake: fppress not seen within ${W}0ms -> guarded key-195 capture cycle"
-  fi
+  [ "$(getprop sys.phh.oplus.fppress)" = 1 ] || return
   hbm_on || return
+  log "finger on sensor (fppress, waited $i) -> HBM on"
   INJ=0
   if [ "$INJECT195" = 1 ]; then sleep $LEAD_S; inject 1; INJ=1; log "injected key195 down"; fi
-  if [ "$FPSEEN" = 1 ]; then
-    hold_fp $MAX_N
-  else
-    sleep "$FALLBACK_HOLD_S"
-  fi
+  hold_fp $MAX_N
   if [ "$INJECT195" = 1 ]; then inject 0; log "injected key195 up"; fi
   hbm_off; log "HBM off (held=$n)"
 }
