@@ -1,3 +1,13 @@
+v11.2.3 (screen-off FOD unlock fix for Android 16 GSI)
+* FOD: fod_service.sh press() no longer aborts when sys.phh.oplus.fppress is not reported after a screen-off
+  wake (Android 16 GSI: the FOD UI opens but the HAL was never told to capture, so it never unlocked).
+  It now attempts one guarded key-195 capture cycle (HBM on -> inject down -> fixed FALLBACK_HOLD_S hold ->
+  inject up -> HBM off). The fppress path is completely unchanged, so Android 17 behaviour is identical.
+  FALLBACK_HOLD_S=1 is configurable in /data/adb/fod/hbm.conf.
+* FOD: sofod_touch.sh refire() gets one delayed press-confirmation attempt before giving up, for GSIs that
+  register the synthetic screen-off touch late.
+* Config: hbm.conf gains FALLBACK_HOLD_S (added once, existing values untouched).
+
 v11.2.2 (reliability fixes)
 * FOD HBM: watchdog timeouts are token-gated and cancelled/reaped before a new HBM session, so an old timer cannot turn off a newer fingerprint glow. MAX_S and the battery-temperature cutoff are unchanged.
 * FOD/SOFOD: fod_service.sh and sofod_touch.sh now use the shared single-instance guard; lib.sh ignores stale or unrelated PIDs. Removed the broad pkill from sofod_touch.sh. Reboot after an in-place update so pre-guard helpers stop.

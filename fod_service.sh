@@ -10,6 +10,7 @@ ENABLED=1; HAL_PATCH=12; MAX_S=3; MAX_N=60; TEMP_MAX=430; WAIT_N=30; KEYLOG=40; 
 WAIT_SO=80      # v7: wait (x10 ms) for SystemUI to report the press when it was injected by sofod_touch (screen-off wake is slow)
 PROP_WAIT=0     # v11.2.1: 1 = experimental resetprop -w waits instead of polling getprop (default OFF = v11.1 behaviour)
 FAST_FILTER=1   # v7: pre-filter touch events with grep (0 = old slow shell loop)
+FALLBACK_HOLD_S=1   # v11.2.3: seconds to keep key 195 down when sys.phh.oplus.fppress is never reported (Android 16 GSI)
 mkdir -p $D
 [ -f $D/hbm.conf ] && . $D/hbm.conf
 while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done
@@ -149,12 +150,27 @@ press() {   # BTN_TOUCH went down
   [ "$ON" = 0 ] || return
   W=$WAIT_N; [ -f $SOFLAG ] && W=$WAIT_SO
   wait_fp1 $W
-  [ "$(getprop sys.phh.oplus.fppress)" = 1 ] || return
+  FPSEEN=0
+  [ "$(getprop sys.phh.oplus.fppress)" = 1 ] && FPSEEN=1
+  if [ "$FPSEEN" = 1 ]; then
+    log "finger on sensor (fppress, waited $i) -> HBM on"
+  else
+    # Android 16 GSI: SystemUI may not report sys.phh.oplus.fppress after a
+    # screen-off wake, so the FOD UI opens but the HAL is never told to
+    # capture and the finger never unlocks. Attempt one guarded key-195
+    # capture cycle anyway (HBM on -> inject down -> fixed hold -> inject up
+    # -> HBM off). On Android 17 fppress is reported in time, so this branch
+    # is not taken and behaviour is unchanged.
+    log "screen-off wake: fppress not seen within ${W}0ms -> guarded key-195 capture cycle"
+  fi
   hbm_on || return
-  log "finger on sensor (fppress, waited $i) -> HBM on"
   INJ=0
   if [ "$INJECT195" = 1 ]; then sleep $LEAD_S; inject 1; INJ=1; log "injected key195 down"; fi
-  hold_fp $MAX_N
+  if [ "$FPSEEN" = 1 ]; then
+    hold_fp $MAX_N
+  else
+    sleep "$FALLBACK_HOLD_S"
+  fi
   if [ "$INJ" = 1 ]; then inject 0; log "injected key195 up"; fi
   hbm_off; log "HBM off (held=$n)"
 }

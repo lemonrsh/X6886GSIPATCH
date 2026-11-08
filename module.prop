@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh v11.2.2 FIX
-version=v11.2.2
-versionCode=114
+name=X6886 GSI PATCH by lemonrsh v11.2.3 FIX
+version=v11.2.3
+versionCode=115
 author=lemonrsh
-description=X6886 GSI patch v11.2.2: safer HBM watchdog cancellation, single-instance FOD/SOFOD helpers, AOD-aware idle dexopt; retains the v11.2.1 wake path, thermal cutoff, and performance defaults.
+description=X6886 GSI patch v11.2.3: screen-off FOD unlock fix for Android 16 GSI - when sys.phh.oplus.fppress is not reported after a screen-off wake, fod_service.sh now runs one guarded key-195 capture cycle instead of giving up, and sofod_touch.sh gets one delayed press-confirmation attempt. Android 17 behaviour is unchanged (fppress path untouched). Keeps the v11.2.2 HBM watchdog, single-instance guards, and AOD-aware idle dexopt.
