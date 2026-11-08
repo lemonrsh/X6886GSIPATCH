@@ -6,7 +6,7 @@ MODDIR=${0%/*}
 D=/data/adb/fod
 LOG=$D/sofod_touch.log
 DELAY=0.08
-HOLD=0.2
+HOLD=0.85
 MAJOR=80
 TID=901
 TRIES=4
@@ -19,12 +19,6 @@ mkdir -p "$D"
 # Guard before touching logs/input: duplicate watchers can replay the same FOD touch twice.
 [ -f "$MODDIR/lib.sh" ] && . "$MODDIR/lib.sh" && single_instance sofod_touch
 [ -f "$D/sofod_touch.conf" ] && . "$D/sofod_touch.conf"
-[ -f "$D/hbm.conf" ] && . "$D/hbm.conf"
-# v11.2.4: FOD position for synthetic touch replay. From hbm.conf (installer addkey)
-# or override in sofod_touch.conf. Your device: 540,2210.
-# Config takes priority over logcat coordinates. Leave empty to use logcat.
-FOD_POS_X=${FOD_POS_X:-}
-FOD_POS_Y=${FOD_POS_Y:-}
 
 log() {
   echo "$(date +%T) $*" >> "$LOG"
@@ -59,16 +53,6 @@ dpms_on() {
   case "$s" in On|on|ON) return 0;; *) return 1;; esac
 }
 pressed() { [ "$(getprop sys.phh.oplus.fppress)" = 1 ]; }
-
-is_awake() { dumpsys power 2>/dev/null | grep -q 'mWakefulness=Awake'; }
-
-# Release any stuck synthetic touch: slot 0, tracking -1, BTN_TOUCH up, SYN.
-release_touch() {
-  sendevent "$DEV" 3 47 0 2>/dev/null
-  sendevent "$DEV" 3 57 -1 2>/dev/null
-  sendevent "$DEV" 1 330 0 2>/dev/null
-  sendevent "$DEV" 0 0 0 2>/dev/null
-}
 
 touch_up() {
   sendevent "$DEV" 3 47 0 2>/dev/null
@@ -160,28 +144,12 @@ while true; do
   while IFS= read -r line; do
     case "$line" in
       *"display on, finger still held at ("*)
-        # Skip synthetic touch replay when the screen is already awake.
-        # Injecting ABS_MT touch events while the UI is active causes
-        # ghost/phantom taps after FOD unlock.
-        if is_awake; then
-          log "screen already awake, skipping synthetic touch replay"
-          continue
-        fi
         if [ -f "$FLAG" ]; then
           age=$(( $(date +%s) - $(stat -c %Y "$FLAG" 2>/dev/null || echo 0) ))
           [ "$age" -gt 8 ] && rm -f "$FLAG" || continue
         fi
         x=$(echo "$line" | sed -n 's/.*held at (\([0-9][0-9]*\), *\([0-9][0-9]*\)).*/\1/p')
         y=$(echo "$line" | sed -n 's/.*held at (\([0-9][0-9]*\), *\([0-9][0-9]*\)).*/\2/p')
-        # Config takes priority over logcat coordinates
-        if [ -n "$FOD_POS_X" ] && [ -n "$FOD_POS_Y" ]; then
-          x=$FOD_POS_X
-          y=$FOD_POS_Y
-        else
-          # Fallback to logcat, then hardcoded defaults
-          [ -z "$x" ] && x=540
-          [ -z "$y" ] && y=2210
-        fi
         case "$x:$y" in *[!0-9:]*|:*) continue;; esac
         : > "$FLAG"
         refire "$x" "$y" &
