@@ -87,6 +87,7 @@ fi
 addkey() { grep -q "^$2=" "$1" 2>/dev/null || echo "$2=$3" >> "$1"; }
 addkey "$DATA/fod/hbm.conf" WAIT_SO 80
 addkey "$DATA/fod/hbm.conf" FAST_FILTER 1
+addkey "$DATA/fod/hbm.conf" FALLBACK_HOLD_S 1
 addkey "$DATA/fod/gsi.conf" VM_DIRTY 1
 addkey "$DATA/fod/gsi.conf" DEX_INSTALL_VERIFY 1
 addkey "$DATA/fod/gsi.conf" FAST_FIRST_BOOT 1

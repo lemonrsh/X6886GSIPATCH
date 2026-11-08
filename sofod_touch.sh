@@ -122,6 +122,26 @@ refire() {
     t=$((t+1))
   done
 
+  if [ "$ok" != 1 ]; then
+    # Some Android 16 GSIs register the synthetic press late. Let SystemUI
+    # settle and give the still-held finger one more confirmation window
+    # before giving up on this wake.
+    sleep 0.5
+    touch_up
+    if touch_down "$PX" "$PY"; then
+      v=0
+      while [ "$v" -lt "$((VERIFY_MS/20))" ] && ! pressed; do
+        sleep 0.02
+        v=$((v+1))
+      done
+      if pressed; then
+        ok=1
+        log "press accepted on delayed attempt after=$((v*20))ms"
+      fi
+    fi
+    touch_up
+  fi
+
   if [ "$ok" = 1 ]; then
     sleep "$HOLD"
     touch_up
