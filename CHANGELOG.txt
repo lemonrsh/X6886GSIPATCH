@@ -1,3 +1,23 @@
+v11.3 (GPU DVFS helper, opt-in)
+* New gpufix.sh. Read-only by default: `sh gpufix.sh status` reports GED/GPUFREQ state with a verdict,
+  and `sh gpufix.sh probe 20` samples current_freqency + gpu_utilization and says whether the GPU ever
+  left its floor. Nothing is written unless GPU_FIX=1 is set in /data/adb/fod/gpu.conf.
+* What the device reports and why it matters: gpu_dvfs_enable=1 and [GPU-LimitC] CeilingIndex=0 mean DVFS is
+  on and nothing caps the GPU, while boost_gpu_enable=0 and gpu_cust_boost_freq=390000 make GED's boost path a
+  no-op (its target is the slowest OPP, i.e. where the GPU already idles). A flat 390 MHz is therefore only a
+  symptom when it happens under real 3D load - probe measures that instead of guessing.
+* `apply` resolves BOOST_FREQ (default 900000 kHz) against the live OPP ladder at
+  /proc/gpufreqv2/gpu_working_opp_table (GED hal ladder as fallback), writes the ladder index to
+  /sys/kernel/ged/hal/custom_boost_gpu_freq, syncs gpu_cust_boost_freq and sets boost_gpu_enable=1.
+  It refuses without root, without a readable ladder, at/above TEMP_MAX, or when the requested frequency is
+  the floor. It never locks a fixed frequency, so DVFS keeps idling the GPU down.
+* Snapshot (/data/adb/fod/gpu.orig) + `revert`, and the values are module parameters, so a plain reboot
+  restores the kernel defaults. Optional REASSERT_S undo-repair loop for vendor power HALs that rewrite the
+  boost node. Logs to /data/adb/fod/gpu.log.
+* service.sh launches `gpufix.sh boot` (no-op while GPU_FIX=0). customize.sh creates /data/adb/fod/gpu.conf
+  once and addkeys new options. diag.sh reports the GPU block and gpu.log.
+* Host-side tests pin the OPP ladder reader (index resolution, GED fallback format, refusal without a ladder).
+
 DT2W removal
 * Removed double-tap-to-wake (dt2w.sh, /data/adb/fod/dt2w.conf, and dt2w.log) along with its service.sh launch, customize.sh config/disable hook, and diag.sh entries.
 * Screen-off FOD (fod_service.sh, sofod_touch.sh, sepolicy.rule, and the patched Goodix HAL/bridge) is unchanged.

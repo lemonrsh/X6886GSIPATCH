@@ -77,6 +77,19 @@ cat > "$DATA/fod/bg.conf" <<'CONF'
 KEEP_PKGS="com.google.android.gms com.facebook.orca"
 CONF
 fi
+# v11.3: GPU DVFS helper (gpufix.sh). Read-only by default; GPU_FIX=1 is required for apply.
+if [ ! -f "$DATA/fod/gpu.conf" ]; then
+cat > "$DATA/fod/gpu.conf" <<'CONF'
+# GPU DVFS on MT6789 / GED. Helper: sh gpufix.sh [status|probe 20|apply|verify 30|revert]
+GPU_FIX=0            # 1 = apply the boost target at every boot (0 = never touch the GPU nodes)
+BOOST_FREQ=900000     # boost target in kHz; 0 = the fastest OPP the driver publishes
+BOOST_ENABLE=1        # also set boost_gpu_enable=1
+SYNC_PARAM=1          # keep gpu_cust_boost_freq (module parameter) in sync with the target
+TEMP_MAX=430          # never apply at or above this battery temperature (deci-degC)
+SAMPLE_S=10           # default probe/verify window in seconds
+REASSERT_S=0          # >0 = re-check the boost nodes every N s (only if your power HAL clobbers them)
+CONF
+fi
 # v7/v10: add new keys to existing configs without touching the user's values
 addkey() { grep -q "^$2=" "$1" 2>/dev/null || echo "$2=$3" >> "$1"; }
 addkey "$DATA/fod/hbm.conf" WAIT_SO 80
@@ -85,6 +98,10 @@ addkey "$DATA/fod/gsi.conf" VM_DIRTY 1
 addkey "$DATA/fod/gsi.conf" DEX_INSTALL_VERIFY 1
 addkey "$DATA/fod/gsi.conf" FAST_FIRST_BOOT 1
 addkey "$DATA/fod/gsi.conf" BOOT_THREADS 0
+addkey "$DATA/fod/gpu.conf" SYNC_PARAM 1
+addkey "$DATA/fod/gpu.conf" TEMP_MAX 430
+addkey "$DATA/fod/gpu.conf" SAMPLE_S 10
+addkey "$DATA/fod/gpu.conf" REASSERT_S 0
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling
 addkey "$DATA/fod/dlfix.conf" ADAPTIVE 1
@@ -110,5 +127,6 @@ ui_print "- v10.5: SOT watcher removed; Settings battery history/database are un
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log sofod_touch.log gsi.log"
 ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
+ui_print "- v11.3: GPU DVFS helper gpufix.sh is opt-in (GPU_FIX=1 in gpu.conf)."
 ui_print "- v11.2: see CHANGELOG.txt. Config: bg.conf. (DT2W removed)"
 ui_print "- Reboot to apply."

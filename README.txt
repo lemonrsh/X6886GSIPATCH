@@ -1,4 +1,4 @@
-X6886 GSI PATCH by lemonrsh — v11.2.2 (see CHANGELOG.txt; original base v10.7: 120 Hz always + FOD stability)
+X6886 GSI PATCH by lemonrsh — v11.3 (see CHANGELOG.txt; original base v10.7: 120 Hz always + FOD stability)
 ====================================
 
 This release removes the non-working screen-on-time (SOT) watcher completely.
@@ -28,12 +28,21 @@ standalone modules to avoid duplicate services. The module ID is unchanged, so
 this is an in-place update. Keep a copy of your current ZIP in case you need
 to roll back.
 
-Configs: /data/adb/fod/hbm.conf, refresh.conf, gsi.conf, dlfix.conf, and
+Configs: /data/adb/fod/hbm.conf, refresh.conf, gsi.conf, dlfix.conf, gpu.conf, and
 sofod_touch.conf (optional). Logs are in /data/adb/fod/.
 
 Diagnostics: run
   su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh'
 The diagnostic script intentionally does not inspect or alter Settings SOT data.
+
+GPU (v11.3, optional): gpufix.sh is read-only unless you enable it.
+  sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/gpufix.sh status
+  su -c 'sh .../gpufix.sh probe 30'    # run while scrolling / inside a 3D game
+If, and only if, probe shows a flat clock under real load:
+  set GPU_FIX=1 in /data/adb/fod/gpu.conf, then
+  su -c 'sh .../gpufix.sh apply' and check again with 'verify 30' / 'probe 30'
+  su -c 'sh .../gpufix.sh revert'  (or reboot) restores the stock values.
+DVFS stays enabled: the GPU still drops to 390 MHz when idle; only the boost target changes.
 
 Installer compatibility: the Goodix HAL hash is checked against the supported
 X6886 hashes. Installation aborts if the device HAL is not recognized.

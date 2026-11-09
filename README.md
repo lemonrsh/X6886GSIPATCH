@@ -1,6 +1,30 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v11.3 GPU DVFS helper (opt-in)
+
+MT6789 GED looks "stuck at 390 MHz" on this device, but the kernel is not locked:
+`gpu_dvfs_enable=1` and `[GPU-LimitC] CeilingIndex: 0`. What *is* off is the boost
+path — `boost_gpu_enable=0`, and the boost target (`gpu_cust_boost_freq`) is
+390000 kHz, the slowest OPP, so a GED boost would ask for the clock the GPU
+already idles at. `gpufix.sh` makes that measurable and, only if you enable it,
+fixable:
+
+- `gpufix.sh status` — read-only report and verdict.
+- `gpufix.sh probe 30` — samples `current_freqency` / `gpu_utilization` and says
+  whether the GPU ever left its floor. A flat 390 MHz while idle proves nothing;
+  run it in a 3D game.
+- `GPU_FIX=1` in `/data/adb/fod/gpu.conf`, then `gpufix.sh apply` — resolves
+  `BOOST_FREQ` (default 900 MHz) against the live OPP ladder, writes the ladder
+  index to `custom_boost_gpu_freq`, syncs `gpu_cust_boost_freq`, sets
+  `boost_gpu_enable=1`. No fixed frequency lock, DVFS stays on.
+- `gpufix.sh revert` (or a reboot) restores the snapshot in
+  `/data/adb/fod/gpu.orig`.
+
+Refuses without root, without a readable OPP ladder, above `TEMP_MAX` battery
+temperature, or when the requested step is not above the floor. Host-side tests
+pin the ladder reader.
+
 ## v11.2.2 reliability fixes
 
 - HBM watchdog timeouts are token-gated and cancelled/reaped before a newer

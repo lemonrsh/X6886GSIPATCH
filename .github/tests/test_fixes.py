@@ -305,5 +305,75 @@ if dexopt_power_ok; then echo yes; else echo no; fi
                     self.assertEqual(result.stdout.strip(), "yes" if expected else "no")
 
 
+class GpuHelperTests(unittest.TestCase):
+    """The GPU OPP ladder reader for gpufix.sh.
+
+    The ladder is a table of strings from the kernel; getting the index wrong moves
+    the floor to an unrelated frequency, so it is pinned down here.
+    """
+
+    TABLE = """[0] freq = 1600000, volt = 106250, vsram = 110000
+[1] freq = 1500000, volt = 100000, vsram = 110000
+[2] freq = 900000, volt = 70000, vsram = 87500
+[44] freq = 390000, volt = 56250, vsram = 75000
+"""
+
+    def setUp(self):
+        self.block = marked_block(
+            read("gpufix.sh"),
+            "# --- GPU OPP / node helpers (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end GPU OPP / node helpers ---",
+        )
+
+    def run_block(self, td, table, body):
+        path = pathlib.Path(td) / "table"
+        path.write_text(table)
+        script = f"""
+set -eu
+TABLES={str(path)!r}
+STATUS={str(pathlib.Path(td) / 'missing')!r}
+{self.block}
+{body}
+"""
+        out = []
+        for shell in SHELLS:
+            result = run_shell(shell, script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out.append(result.stdout)
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
+        return out[0]
+
+    def test_ladder_stats(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = self.run_block(td, self.TABLE, 'ladder_stats\necho "$L_N $L_MIN $L_MAX $L_SLOW"')
+            self.assertEqual(out.split(), ["4", "390000", "1600000", "44"])
+
+    def test_resolve_opp(self):
+        cases = {"0": ("0", "1600000"), "350000": ("44", "390000"), "900000": ("2", "900000"),
+                 "950000": ("1", "1500000"), "1600000": ("0", "1600000"), "2000000": ("0", "1600000")}
+        with tempfile.TemporaryDirectory() as td:
+            for want, expected in cases.items():
+                with self.subTest(want=want):
+                    out = self.run_block(
+                        td, self.TABLE,
+                        f'resolve_opp {want}\necho "$R_IDX $R_FREQ"',
+                    )
+                    self.assertEqual(out.split(), list(expected))
+
+    def test_no_ladder_means_apply_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = self.run_block(td, "", 'if resolve_opp 900000; then echo ok; else echo refused; fi\n'
+                                          'if ladder_stats; then echo stats; else echo noladder; fi')
+            self.assertEqual(out.split(), ["refused", "noladder"])
+
+    def test_ged_ladder_format_is_accepted(self):
+        # The GED status dump is the fallback source when /proc/gpufreqv2 has nothing.
+        ged = ("[GPU-OPP]       Index: 0, Freq: 1600000, Volt: 106250, Vsram: 110000\n"
+               "[GPU-OPP]       Index: 44, Freq: 390000, Volt: 56250, Vsram: 75000\n")
+        with tempfile.TemporaryDirectory() as td:
+            out = self.run_block(td, ged, 'resolve_opp 900000\necho "$R_IDX $R_FREQ"')
+            self.assertEqual(out.split(), ["0", "1600000"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
