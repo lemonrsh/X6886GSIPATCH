@@ -37,16 +37,20 @@ HOLD_S=20            # keep the floor up this long after the last busy sample
 INTERVAL=1           # governor period in seconds
 HOT_HZ=0             # floor while above TEMP_MAX; 0 = MIN_HZ
 TEMP_MAX=500         # ONLY at/above this temperature (deci-degC = 50 C) the floor drops
-CEIL_HZ=1600000      # GED upper bound published by the governor; 0 = the fastest OPP
+CEIL_HZ=0            # GED upper bound published by the governor; 0 = the top OPP
 TOP_INDEX=44         # slowest OPP index, used only when /proc/gpufreqv2 is unreadable
+TOP_HZ_KHZ=1600000   # kHz of the fastest OPP: written to the kHz params on a denied ladder
+BOTTOM_HZ_KHZ=390000 # kHz of the slowest OPP
 SYNC_PARAM=1         # keep gpu_cust_boost_freq in sync with the floor
 CONF
 fi
 
-# v1.3.0: single throttle point at 50 C (older installs carried 43 C).
-if grep -q '^TEMP_MAX=430$' "$CFG" 2>/dev/null; then
-  sed -i 's/^TEMP_MAX=430$/TEMP_MAX=500/' "$CFG"
-  ui_print "- gpu.conf: TEMP_MAX 430 -> 500 (throttle only at 50 C)"
+# v1.3.0/v1.4.0: single throttle point at 50 C. The old migration was anchored to the end
+# of the line, so it never matched a config written by this very installer (every line has
+# a trailing comment) - phones kept throttling at 43 C while the messages said 50.
+if grep -q '^TEMP_MAX=430' "$CFG" 2>/dev/null; then
+  sed -i 's/^TEMP_MAX=430.*/TEMP_MAX=500         # ONLY at/above this temperature (deci-degC = 50 C) the floor drops/' "$CFG"
+  ui_print "- gpu.conf: TEMP_MAX 430 -> 500 (throttle only at 50 C, was 43 C)"
 fi
 grep -q '^TEMP_MIN=' "$CFG" 2>/dev/null && sed -i '/^TEMP_MIN=/d' "$CFG"
 # v1.3.1: a safer install rests at 790 MHz and only sleeps at 390.
@@ -61,8 +65,15 @@ fi
 # so the floor can actually reach 1600 instead of stopping at the stock 1100 MHz cap.
 if [ "$(sed -n 's/^MODE=//p' "$CFG" | head -n 1)" = safer ]; then
   if ! grep -q '^CEIL_HZ=' "$CFG"; then echo 'CEIL_HZ=0' >> "$CFG"
-  else sed -i 's/^CEIL_HZ=1600000$/CEIL_HZ=0/' "$CFG"; fi
+  else sed -i 's/^CEIL_HZ=1600000.*/CEIL_HZ=0            # 0 = the top OPP/' "$CFG"; fi
 fi
+# v1.4.0: the kHz ends of the ladder, so "index 0"/"index 44" also write a real frequency.
+# Without them a correct hal index can sit next to cust_upbound_freq=1100000 (the stock
+# cap) and the GPU never passes 1100 MHz - exactly the bug that kept surfacing on device.
+grep -q '^TOP_HZ_KHZ='    "$CFG" || echo 'TOP_HZ_KHZ=1600000'   >> "$CFG"
+grep -q '^BOTTOM_HZ_KHZ=' "$CFG" || echo 'BOTTOM_HZ_KHZ=390000' >> "$CFG"
+# and make sure the kHz parameters are kept in sync at all
+grep -q '^SYNC_PARAM=' "$CFG" || echo 'SYNC_PARAM=1' >> "$CFG"
 
 if [ ! -w /sys/kernel/ged/hal/custom_boost_gpu_freq ]; then
   ui_print "! /sys/kernel/ged/hal/custom_boost_gpu_freq is missing or read-only."
@@ -83,6 +94,11 @@ rm -f "$MODPATH/.choice"
 [ -n "$_CH" ] || _CH=safer
 GPUFIX_STATE="$STATE" sh "$MODPATH/gpufix.sh" preset "$_CH" >&2 || true
 ui_print "- Config: $CFG (MODE=${_CH}, ENABLED=1)"
+# v1.4.0: publish the nodes right now, so a freshly flashed update takes effect without
+# waiting for a reboot or for the user to run anything by hand.
+ui_print " "
+ui_print "- Applying the profile to the GPU nodes now (no reboot needed for this part):"
+GPUFIX_STATE="$STATE" sh "$MODPATH/gpufix.sh" reapply 2>&1 | sed 's/^/  /' 
 ui_print "- Change it later: sh $MODPATH/gpufix.sh preset safer | preset max"
 ui_print "- Log: $STATE/gpu.log   Check: sh $MODPATH/gpufix.sh status"
 ui_print "- Reboot to start, or run: sh $MODPATH/gpufix.sh run &"

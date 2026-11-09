@@ -346,6 +346,7 @@ class GpuHelperTests(unittest.TestCase):
 set -eu
 TABLES={str(path)!r}
 STATUS={str(pathlib.Path(td) / 'missing')!r}
+SLEEP_HZ=390000; TOP_INDEX=44; TOP_HZ_KHZ=1600000; BOTTOM_HZ_KHZ=390000
 {self.block}
 {body}
 """
@@ -402,7 +403,10 @@ if offline_index 900000; then echo "mid:resolved"; else echo "mid:refused"; fi
 """
         with tempfile.TemporaryDirectory() as td:
             out = self.run_block(td, "", body)
-            self.assertEqual(out.split(), ["top:0:0", "zero:0:0", "max:0:0", "min:44:390000", "mid:refused"])
+            # R_FREQ is no longer 0 for the top OPP: the kHz parameters must be written
+            # with the real top frequency, or GED keeps its stock 1100000 cap.
+            self.assertEqual(out.split(), ["top:0:1600000", "zero:0:1600000",
+                                           "max:0:1600000", "min:44:390000", "mid:refused"])
 
     def test_ladder_available_is_cached(self):
         with tempfile.TemporaryDirectory() as td:
@@ -559,6 +563,71 @@ plan_now
         self.assertEqual(self.plan_scr("floor", 0, 0, hot=1), "390000 hot")
         # an explicit HOT_HZ keeps a warm-but-fast floor instead of the stock one
         self.assertEqual(self.plan_scr("floor", 0, 0, hot=1, hot_hz=900000), "900000 hot")
+
+
+class GpuKHzSyncTests(unittest.TestCase):
+    """v12: a correct hal index is not enough - the kHz parameter must match it.
+
+    Device symptom this pins down: 'hal index 0' together with cust_upbound_freq=1100000,
+    so GED kept enforcing the stock 1100 MHz cap while every index looked right.
+    """
+
+    def block(self):
+        return marked_block(
+            read("gpufix.sh"),
+            "# --- GPU OPP / node helpers (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end GPU OPP / node helpers ---",
+        ) + "\n" + marked_block(
+            read("gpufix.sh"),
+            "# --- OPP end helper (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end OPP end helper ---",
+        )
+
+    def run_with(self, body, **vars_):
+        defaults = dict(L_MIN="", L_MAX="", SLEEP_HZ=390000, TOP_INDEX=44,
+                        TOP_HZ_KHZ=1600000, BOTTOM_HZ_KHZ=390000, MIN_HZ=790000,
+                        SAFE_INDEX=43, LADDER_OK=0)
+        defaults.update(vars_)
+        assign = "\n".join(f"{k}={v!r}" for k, v in defaults.items())
+        script = f"""
+set -eu
+TABLES=/nonexistent
+STATUS=/nonexistent
+{assign}
+{self.block()}
+{body}
+"""
+        out = []
+        for shell in SHELLS:
+            r = run_shell(shell, script)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out.append(r.stdout.strip())
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
+        return out[0]
+
+    def test_offline_top_publishes_a_real_frequency(self):
+        # top_khz comes from the config when the ladder is unavailable, so index 0 is
+        # written together with a real kHz value instead of being skipped.
+        self.assertEqual(self.run_with("offline_top; echo \"$R_IDX:$R_FREQ\""), "0:1600000")
+        self.assertEqual(self.run_with("offline_top; echo \"$R_IDX:$R_FREQ\"", TOP_HZ_KHZ=1500000), "0:1500000")
+
+    def test_bottom_frequency_uses_the_config(self):
+        self.assertEqual(self.run_with("bottom_khz"), "390000")
+        self.assertEqual(self.run_with("bottom_khz", BOTTOM_HZ_KHZ=400000), "400000")
+
+    def test_a_readable_ladder_still_wins(self):
+        # When the ladder can be read, its own numbers override the configured ones.
+        self.assertEqual(self.run_with("top_khz", L_MAX=1600000, TOP_HZ_KHZ=1500000), "1600000")
+        self.assertEqual(self.run_with("bottom_khz", L_MIN=350000, BOTTOM_HZ_KHZ=390000), "350000")
+
+    def test_reapply_and_ceil_accept_a_spelled_out_top_opp(self):
+        """CEIL_HZ=1600000 on a denied ladder is index 0, not an error."""
+        src = read("gpufix.sh")
+        ceil_block = re.search(r"^ceil_to\(\) \{.*?^\}", src, re.S | re.M).group(0)
+        self.assertIn('_top=$(top_khz)', ceil_block)
+        self.assertIn('"$_want" -ge "$_top"', ceil_block)
+        # and reapply must exist and be dispatched under the spellings we advertise
+        self.assertIn("reapply|fix|repair) reapply", src)
 
 
 class GpuSaferModeTests(unittest.TestCase):
