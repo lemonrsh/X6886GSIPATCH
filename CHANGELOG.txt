@@ -1,3 +1,17 @@
+v11.8 (2026-11-09) - FIXED: safer topped out at 1100 MHz
+* Reported on device: the safer variant showed a 1100 MHz maximum. Cause: 'preset safer'
+  moved the GED floor but never the GED upper bound, which was still the stock
+  gpu_cust_upbound_freq=1100000 (hal index 9). GED will not run above that bound, so the
+  floor could ask for 1600 MHz and the GPU still stopped at 1100.
+* 'preset safer' now publishes the ceiling too (CEIL_HZ=0 = the top OPP, as 'preset max'
+  does) and prints it; the loop keeps it enforced for MODE=safer even if CEIL_HZ is empty.
+* Existing safer installs are healed on the next flash (CEIL_HZ 1600000/missing -> 0).
+  Without reflashing: 'gpufix.sh preset safer' or 'gpufix.sh ceil 0'.
+* status: in MODE=safer it now prints the ceiling target and, when the live upper bound is
+  not the top OPP, says outright that the ceiling is capping the GPU and how to fix it.
+* Tests: 38 host cases, incl. a regression test that safer applies the ceiling and that
+  both loop branches default it to the top OPP.
+
 v11.7 (2026-11-09) - safer goes three-step and watches the CPU too
 * MODE=safer is now 790 MHz rest -> 1600 MHz on the slightest UI work -> 390 MHz asleep:
   MIN_HZ=790000 is the while-in-use rest floor, SLEEP_HZ=390000 is used for screen-off,

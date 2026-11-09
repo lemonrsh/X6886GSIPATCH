@@ -56,6 +56,13 @@ if [ "$(sed -n 's/^MODE=//p' "$CFG" | head -n 1)" = safer ]; then
   grep -q '^CPU_ON='   "$CFG" || echo 'CPU_ON=60'     >> "$CFG"
   sed -i 's/^MIN_HZ=390000$/MIN_HZ=790000/' "$CFG"
 fi
+# v1.3.2: 'safer' now also lifts GED's upper bound. Any safer install without a ceiling
+# target (CEIL_HZ missing or the stock 1600000 that was never enforced) gets 0 = top OPP,
+# so the floor can actually reach 1600 instead of stopping at the stock 1100 MHz cap.
+if [ "$(sed -n 's/^MODE=//p' "$CFG" | head -n 1)" = safer ]; then
+  if ! grep -q '^CEIL_HZ=' "$CFG"; then echo 'CEIL_HZ=0' >> "$CFG"
+  else sed -i 's/^CEIL_HZ=1600000$/CEIL_HZ=0/' "$CFG"; fi
+fi
 
 if [ ! -w /sys/kernel/ged/hal/custom_boost_gpu_freq ]; then
   ui_print "! /sys/kernel/ged/hal/custom_boost_gpu_freq is missing or read-only."

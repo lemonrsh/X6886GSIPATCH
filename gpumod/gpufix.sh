@@ -220,7 +220,9 @@ preset_values() {   # $1 preset -> "mode top_hz load_on hold_s interval ceil"; c
   # The ceiling is expressed as the ladder-agnostic 0 ("fastest OPP"), so a maxed preset
   # works even where /proc/gpufreqv2 is denied to us. "" leaves the ceiling alone.
   case "$1" in
-    safer) printf '%s\n' "safer 0 25 6 1 " ;;   # 790 rest floor (set by the preset), 1600 on any UI work, 390 asleep
+    # safer also lifts the GED upper bound: without it the stock cap (1100 MHz on this
+    # device) wins and 'max 1600' is never actually reachable, whatever the floor says.
+    safer) printf '%s\n' "safer 0 25 6 1 0" ;;  # 790 rest floor, 1600 on any UI work, 390 asleep
     stock) printf '%s\n' "off 390000 60 0 2 " ;;
     boost) printf '%s\n' "adaptive 1200000 60 20 1 " ;;
     max)   printf '%s\n' "floor 0 60 20 1 0" ;;
@@ -542,6 +544,14 @@ status() {
     say "verdict: MODE=safer - the floor rests at $(hz_text "$MIN_HZ") and jumps to $(hz_text "$TOP_HZ")"
     say "         for ${HOLD_S}s whenever the GPU *or* the CPU${CPU_ON:+ (>${CPU_ON}%)} is busy, so the whole UI benefits."
     say "         screen off, >= $((TEMP_MAX / 10)) C or below ${BAT_MIN}% -> $(hz_text "$SLEEP_HZ")."
+    say "         ceiling target: $(hz_text "$CEIL_HZ")."
+    # The most common reason "safer shows 1100 MHz": the floor is asking for 1600 but GED's
+    # upper bound is still the stock 1100000, so the GPU can never reach the top OPP.
+    if [ -n "$_ub" ] && [ "$_ubi" != 0 ]; then
+      say "         ! the ceiling is CAPPING the GPU at $(hz_text "$_ub") (hal index $_ubi)."
+      say "           The floor can ask for 1600 all it likes; GED will not go above this."
+      say "           Fix: '$ME preset safer' (lifts both), or '$ME ceil 0'."
+    fi
   else
     say "verdict: governor on - floor moves to $(hz_text "$TOP_HZ") while busy, back to $(hz_text "$MIN_HZ") when idle."
   fi
@@ -744,8 +754,9 @@ preset() {   # $1 = safer | boost | max | stock
     2) say "floor already level $_lvl" ;;
     *) say "! could not move the floor (custom_boost_gpu_freq reads $(node_val "$N_BOOST"))"; return 1 ;;
   esac
-  if [ "$MODE" = floor ]; then
-    CEIL_HZ=$_ceil          # 0 = top OPP, which is what 'preset max' means
+  if [ "$MODE" = floor ] || [ "$MODE" = safer ]; then
+    # $_ceil: 0 = the top OPP; "" = leave the ceiling alone (boost/stock)
+    CEIL_HZ=$_ceil
     ceil_to "$_ceil"
     case $? in
       0) both "ceiling now level $R_IDX ($(hz_text "$R_FREQ"))" ;;
@@ -943,6 +954,7 @@ run() {   # the adaptive loop
           [ $((_n % 60)) -eq 0 ] && log "run(offline): could not set level $R_IDX; node reads $(node_val "$N_BOOST")"
         fi
       fi
+      [ "$MODE" = safer ] && [ -z "$CEIL_HZ" ] && CEIL_HZ=0   # safer always needs the top OPP open
       [ -n "$CEIL_HZ" ] && [ $((_n % 15)) -eq 0 ] && ceil_to "$CEIL_HZ" >/dev/null 2>&1
       sleep "$INTERVAL"
       continue
@@ -970,6 +982,7 @@ run() {   # the adaptive loop
         log "run: could not set level $R_IDX ($R_FREQ kHz); node reads $(node_val "$N_BOOST")"
       fi
     fi
+    [ "$MODE" = safer ] && [ -z "$CEIL_HZ" ] && CEIL_HZ=0   # safer always needs the top OPP open
     [ -n "$CEIL_HZ" ] && [ $((_n % 15)) -eq 0 ] && ceil_to "$CEIL_HZ" >/dev/null 2>&1
     sleep "$INTERVAL"
   done
