@@ -1,3 +1,35 @@
+v13 (2026-11-09) - "both presets are 1100": the two limits below the nodes we write
+* After v12 every index and every kHz parameter could read back perfectly, the daemon
+  re-published them every 15 s, and the GPU could STILL sit at 1100 MHz in BOTH presets.
+  Two limits live below the two nodes this script writes, and neither is visible in them:
+  (a) /proc/gpufreqv2/fix_target_opp_index - a pinned target OPP. 0..n pins, -1 releases.
+      A stale pin (vendor power HAL after a thermal event) freezes the clock whatever the
+      preset asks for. Now released on every reapply, re-checked in the loop every 15 s,
+      and restorable with 'revert'.
+  (b) the driver's own table can be CLIPPED by a platform limiter (limit_table). v12 then
+      read that clipped view as "the top OPP is 1100000" and dutifully re-published
+      gpu_cust_upbound_freq=1100000 every 15 s - re-applying the very cap it exists to
+      lift. top_khz() now takes the MAX of the configured top and the live table, so a
+      clipped table can never drag the published top down.
+* ceil 0 / resolve_opp 0: "the top OPP by name" now means the CONFIGURED top, not the
+  highest entry a limited driver happens to publish.
+* NEW 'cap' (alias 'why'): audits every source of a ceiling in one screen - driver table
+  (marked CLIPPED when short), limit_table rows, hal index, kHz parameter, pin state - and
+  releases a stale pin. 'unpin' does the release on its own.
+* reapply verifies the ceiling from the outside: a matching readback is not proof, so if
+  the kernel kept a lower bound it says so and points at 'cap' instead of reporting success.
+* status grows two lines: 'pin:' when a pin is holding the clock, and 'cap:' when the
+  driver's own table is shorter than the configured top.
+* ceil_to falls back to what the kernel does accept, and names the limiter when it refuses.
+* The loop now asserts the ceiling and the pin on its FIRST tick, not 15 s in: the reload,
+  ceiling and pin checks share one cadence (_n - 1). Nothing is lost if the phone is
+  rebooted a few seconds after boot completes.
+* New config keys: UNPIN=1 (release stale pins), KEEP_PIN=0 (set to 1 to respect a pin
+  someone made on purpose). Revert restores a pin we released.
+* Tests: 57 (was 45), incl. clipped-table, pin state/release and the "released before the
+  ceiling is written" ordering.
+* Versions: v13/131, gpumod v1.4.1/10.
+
 v12 (2026-11-09) - no more manual steps: the kHz parameters are always written
 * ROOT CAUSE of "safer still shows 1100 MHz": on a build where /proc/gpufreqv2 is denied,
   the script could name a ladder index but not its frequency, so it wrote "index 0" to
