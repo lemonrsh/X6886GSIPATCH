@@ -11,7 +11,8 @@ MODDIR=${0%/*}
 (
   for part in fod_service.sh dlfix.sh perf_tweaks.sh messenger_bg.sh otp_autofix.sh gpufix.sh; do
     if [ -f "$MODDIR/$part" ]; then
-      ( sh "$MODDIR/$part" >/dev/null 2>&1 & )
+      case "$part" in gpufix.sh) A=boot ;; *) A= ;; esac
+      ( sh "$MODDIR/$part" $A >/dev/null 2>&1 & )
     fi
     sleep 1
   done

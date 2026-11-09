@@ -1,29 +1,36 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## v11.3 GPU DVFS helper (opt-in)
+## v11.3 load-following GPU governor (opt-in)
 
-MT6789 GED looks "stuck at 390 MHz" on this device, but the kernel is not locked:
-`gpu_dvfs_enable=1` and `[GPU-LimitC] CeilingIndex: 0`. What *is* off is the boost
-path — `boost_gpu_enable=0`, and the boost target (`gpu_cust_boost_freq`) is
-390000 kHz, the slowest OPP, so a GED boost would ask for the clock the GPU
-already idles at. `gpufix.sh` makes that measurable and, only if you enable it,
-fixable:
+On this device the GPU is not locked — `gpu_dvfs_enable=1` and
+`[GPU-LimitC] CeilingIndex: 0` — but GED's boost path is inert
+(`boost_gpu_enable=0`, `gpu_cust_boost_freq=390000` = the slowest OPP), so in practice
+the clock sits at 390 MHz unless GED itself sees sustained 3D work.
 
-- `gpufix.sh status` — read-only report and verdict.
-- `gpufix.sh probe 30` — samples `current_freqency` / `gpu_utilization` and says
-  whether the GPU ever left its floor. A flat 390 MHz while idle proves nothing;
-  run it in a 3D game.
-- `GPU_FIX=1` in `/data/adb/fod/gpu.conf`, then `gpufix.sh apply` — resolves
-  `BOOST_FREQ` (default 900 MHz) against the live OPP ladder, writes the ladder
-  index to `custom_boost_gpu_freq`, syncs `gpu_cust_boost_freq`, sets
-  `boost_gpu_enable=1`. No fixed frequency lock, DVFS stays on.
-- `gpufix.sh revert` (or a reboot) restores the snapshot in
-  `/data/adb/fod/gpu.orig`.
+`gpufix.sh` makes the floor follow load instead:
 
-Refuses without root, without a readable OPP ladder, above `TEMP_MAX` battery
-temperature, or when the requested step is not above the floor. Host-side tests
-pin the ladder reader.
+| `gpu_utilization` load | floor requested |
+| --- | --- |
+| below `LOAD_ON` (60 %) and `HOLD_S` (20 s) elapsed | `MIN_HZ` 390 MHz (stock) |
+| at/above `LOAD_ON` | `TOP_HZ` 1200 MHz, held for `HOLD_S` after |
+| battery ≥ `TEMP_MAX` (43 °C) | released to `MIN_HZ` |
+
+Ceiling (1600 MHz) and `gpu_dvfs_enable` are never written, so the GPU still scales by
+demand inside the window and still idles at 390 MHz.
+
+```sh
+M=/data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh
+sh $M/gpufix.sh status          # state, live load, plan, verdict — writes nothing
+sh $M/gpufix.sh probe 20        # use the phone normally while it runs
+```
+
+Enable it in the main patch by setting `ENABLED=1` in `/data/adb/fod/gpu.conf`
+(`MODE=floor` for an always-raised floor, `MODE=off` to always release), or install the
+standalone **GPU-DVFS-X6886** module from the same release — same script, own state in
+`/data/adb/gpufix`, own uninstaller. Do not run both.
+
+`gpufix.sh revert` or a reboot restores the stock nodes.
 
 ## v11.2.2 reliability fixes
 

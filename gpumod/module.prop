@@ -1,0 +1,6 @@
+id=gpu_dvfs_x6886
+name=X6886 GPU DVFS governor
+version=v1.0.0
+versionCode=1
+author=lemonrsh
+description=Load-following GPU floor for MT6789/GED: raises the boost floor while the GPU is busy (UI, games, video) and releases it when idle. Ceiling and DVFS are untouched; reversible with one command or a reboot.

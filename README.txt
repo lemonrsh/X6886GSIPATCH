@@ -35,14 +35,16 @@ Diagnostics: run
   su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh'
 The diagnostic script intentionally does not inspect or alter Settings SOT data.
 
-GPU (v11.3, optional): gpufix.sh is read-only unless you enable it.
+GPU (v11.3, optional): gpufix.sh makes the GPU floor follow load.
   sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/gpufix.sh status
   su -c 'sh .../gpufix.sh probe 30'    # run while scrolling / inside a 3D game
-If, and only if, probe shows a flat clock under real load:
-  set GPU_FIX=1 in /data/adb/fod/gpu.conf, then
-  su -c 'sh .../gpufix.sh apply' and check again with 'verify 30' / 'probe 30'
+It is off in this module until you set ENABLED=1 in /data/adb/fod/gpu.conf, or install
+the separate GPU-DVFS-X6886 module from the same release (same script, governor on,
+state in /data/adb/gpufix). With the governor on the floor is 390 MHz while idle and
+1200 MHz while gpu_utilization >= 60 %, held 20 s, released at 43 C battery.
+Ceiling (1600 MHz) and gpu_dvfs_enable are never touched: the GPU still idles at
+390 MHz and still scales by demand inside the window.
   su -c 'sh .../gpufix.sh revert'  (or reboot) restores the stock values.
-DVFS stays enabled: the GPU still drops to 390 MHz when idle; only the boost target changes.
 
 Installer compatibility: the Goodix HAL hash is checked against the supported
 X6886 hashes. Installation aborts if the device HAL is not recognized.

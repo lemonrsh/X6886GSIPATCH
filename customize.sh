@@ -80,14 +80,19 @@ fi
 # v11.3: GPU DVFS helper (gpufix.sh). Read-only by default; GPU_FIX=1 is required for apply.
 if [ ! -f "$DATA/fod/gpu.conf" ]; then
 cat > "$DATA/fod/gpu.conf" <<'CONF'
-# GPU DVFS on MT6789 / GED. Helper: sh gpufix.sh [status|probe 20|apply|verify 30|revert]
-GPU_FIX=0            # 1 = apply the boost target at every boot (0 = never touch the GPU nodes)
-BOOST_FREQ=900000     # boost target in kHz; 0 = the fastest OPP the driver publishes
-BOOST_ENABLE=1        # also set boost_gpu_enable=1
-SYNC_PARAM=1          # keep gpu_cust_boost_freq (module parameter) in sync with the target
-TEMP_MAX=430          # never apply at or above this battery temperature (deci-degC)
-SAMPLE_S=10           # default probe/verify window in seconds
-REASSERT_S=0          # >0 = re-check the boost nodes every N s (only if your power HAL clobbers them)
+# GPU DVFS on MT6789 / GED. Helper: sh gpufix.sh [status|probe 20|run|revert]
+# Disabled here: the main patch only provides the tool. For the always-on
+# governor install the separate GPU-DVFS-X6886 module instead.
+ENABLED=0            # 1 = start the adaptive governor at boot (0 = never touch the GPU nodes)
+MODE=adaptive        # adaptive (load-following) | floor (always TOP_HZ) | off (always MIN_HZ)
+MIN_HZ=390000        # floor while idle (stock floor)
+TOP_HZ=1200000       # floor while the GPU is busy
+LOAD_ON=60           # gpu_utilization load %, at or above this counts as busy
+HOLD_S=20            # keep TOP_HZ this long after the last busy sample
+INTERVAL=2           # governor period in seconds
+TEMP_MAX=430         # >= this battery temperature (deci-degC) releases the floor
+SYNC_PARAM=1         # keep gpu_cust_boost_freq in sync with the floor
+SAMPLE_S=10          # default probe/verify window in seconds
 CONF
 fi
 # v7/v10: add new keys to existing configs without touching the user's values
@@ -101,7 +106,10 @@ addkey "$DATA/fod/gsi.conf" BOOT_THREADS 0
 addkey "$DATA/fod/gpu.conf" SYNC_PARAM 1
 addkey "$DATA/fod/gpu.conf" TEMP_MAX 430
 addkey "$DATA/fod/gpu.conf" SAMPLE_S 10
-addkey "$DATA/fod/gpu.conf" REASSERT_S 0
+addkey "$DATA/fod/gpu.conf" MIN_HZ 390000
+addkey "$DATA/fod/gpu.conf" LOAD_ON 60
+addkey "$DATA/fod/gpu.conf" HOLD_S 20
+addkey "$DATA/fod/gpu.conf" INTERVAL 2
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling
 addkey "$DATA/fod/dlfix.conf" ADAPTIVE 1
@@ -127,6 +135,6 @@ ui_print "- v10.5: SOT watcher removed; Settings battery history/database are un
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log sofod_touch.log gsi.log"
 ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
-ui_print "- v11.3: GPU DVFS helper gpufix.sh is opt-in (GPU_FIX=1 in gpu.conf)."
+ui_print "- v11.3: GPU DVFS governor gpufix.sh is opt-in (ENABLED=1 in gpu.conf), or install GPU-DVFS-X6886."
 ui_print "- v11.2: see CHANGELOG.txt. Config: bg.conf. (DT2W removed)"
 ui_print "- Reboot to apply."

@@ -43,7 +43,8 @@ def run_shell(shell, script, cwd=None, env=None):
 
 class SyntaxTests(unittest.TestCase):
     def test_shell_syntax(self):
-        scripts = sorted(REPO.glob("*.sh")) + [REPO / "META-INF/com/google/android/update-binary"]
+        scripts = (sorted(REPO.glob("*.sh")) + sorted(REPO.glob("gpumod/*.sh"))
+                   + [REPO / "META-INF/com/google/android/update-binary"])
         for shell in SHELLS:
             for script in scripts:
                 with self.subTest(shell=shell, script=script.name):
@@ -55,6 +56,19 @@ class SyntaxTests(unittest.TestCase):
                         timeout=20,
                     )
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class GpuModulePackagingTests(unittest.TestCase):
+    def test_standalone_module_reuses_the_shared_script(self):
+        # gpumod/ is packaged on its own; a divergent copy of gpufix.sh in it would
+        # ship different behaviour than the one that is tested here.
+        self.assertEqual(read("gpufix.sh"), read("gpumod/gpufix.sh"))
+        self.assertTrue((REPO / "gpumod/module.prop").exists())
+        self.assertIn("id=gpu_dvfs_x6886", read("gpumod/module.prop"))
+        self.assertIn("gpufix.sh", read("gpumod/service.sh"))
+        # The main module starts every part with `sh <part>`; gpufix.sh has no
+        # shebang-free assumptions, so it must receive the explicit `boot` argument.
+        self.assertIn("gpufix.sh\" boot", read("gpumod/service.sh"))
 
 
 class GuardPlacementTests(unittest.TestCase):
@@ -366,6 +380,15 @@ STATUS={str(pathlib.Path(td) / 'missing')!r}
                                           'if ladder_stats; then echo stats; else echo noladder; fi')
             self.assertEqual(out.split(), ["refused", "noladder"])
 
+    def test_adaptive_block_is_present(self):
+        block = marked_block(
+            read("gpufix.sh"),
+            "# --- adaptive helpers (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end adaptive helpers ---",
+        )
+        self.assertIn("sticky_step", block)
+        self.assertIn("pick_target", block)
+
     def test_ged_ladder_format_is_accepted(self):
         # The GED status dump is the fallback source when /proc/gpufreqv2 has nothing.
         ged = ("[GPU-OPP]       Index: 0, Freq: 1600000, Volt: 106250, Vsram: 110000\n"
@@ -373,6 +396,61 @@ STATUS={str(pathlib.Path(td) / 'missing')!r}
         with tempfile.TemporaryDirectory() as td:
             out = self.run_block(td, ged, 'resolve_opp 900000\necho "$R_IDX $R_FREQ"')
             self.assertEqual(out.split(), ["0", "1600000"])
+
+
+class GpuGovernorTests(unittest.TestCase):
+    """sticky_step / pick_target decide when the GPU floor is raised.
+
+    All time values are seconds of uptime passed in as plain integers, so the
+    helper is deterministic under both shells.
+    """
+
+    def setUp(self):
+        self.block = marked_block(
+            read("gpufix.sh"),
+            "# --- adaptive helpers (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end adaptive helpers ---",
+        )
+
+    DEFAULT_ENV = "LOAD_ON=60\nHOLD_S=20\nTOP_HZ=1200000\nMIN_HZ=390000"
+
+    def run_block(self, body, env=None):
+        env = self.DEFAULT_ENV if env is None else env
+        script = f"""
+set -eu
+{env}
+{self.block}
+{body}
+"""
+        out = []
+        for shell in SHELLS:
+            result = run_shell(shell, script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out.append(result.stdout)
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
+        return out[0]
+
+    def test_load_at_threshold_sticks(self):
+        self.assertEqual(self.run_block('sticky_step 0 60 100 0 20').split(), ["1", "100"])
+        self.assertEqual(self.run_block('sticky_step 0 59 100 0 20').split(), ["0", "0"])
+
+    def test_hold_window(self):
+        # busy at t=100, still inside the 20 s hold at t=115
+        self.assertEqual(self.run_block('sticky_step 1 0 115 100 20').split(), ["1", "100"])
+        # and released once the hold is over at t=121
+        self.assertEqual(self.run_block('sticky_step 1 0 121 100 20').split(), ["0", "100"])
+
+    def test_load_refreshes_last_busy(self):
+        self.assertEqual(self.run_block('sticky_step 1 90 130 100 20').split(), ["1", "130"])
+
+    def test_non_numeric_input_is_survivable(self):
+        # A broken node read must not crash the loop or raise the floor.
+        self.assertEqual(self.run_block('sticky_step 0 "" 100 0 20').split(), ["0", "0"])
+        self.assertEqual(self.run_block('sticky_step x 99 100 0 20').split()[0], "x")
+
+    def test_target_selection(self):
+        self.assertEqual(self.run_block('pick_target 1').strip(), "1200000")
+        self.assertEqual(self.run_block('pick_target 0').strip(), "390000")
 
 
 if __name__ == "__main__":
