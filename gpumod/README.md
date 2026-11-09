@@ -52,7 +52,7 @@ su -c "sh $M/gpufix.sh revert"        # undo the nodes (a reboot does too)
 | preset | mode | floor | ceiling | note |
 | --- | --- | --- | --- | --- |
 | `safer` | `safer` | **790 MHz rest, 1600 MHz on any GPU *or* CPU work, 390 screen-off** | top OPP (`CEIL_HZ=0`) | recommended: whole UI stays fast, nothing pinned |
-| `max` | `floor` | top OPP (`TOP_HZ=0`) | top OPP (`CEIL_HZ=0`) | floor == ceiling, GPU cannot idle down |
+| `max` | `floor` | top OPP while the screen is on, 390 MHz with it off | top OPP (`CEIL_HZ=0`) | floor == ceiling while awake; sleeps with the screen |
 | `boost` | `adaptive` | 1200 MHz while busy, 390 idle | unchanged | follows `gpu_utilization`, holds 20 s |
 | `stock` | `off` | 390 MHz | unchanged | nothing raised |
 

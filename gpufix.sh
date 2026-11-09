@@ -332,12 +332,14 @@ is_root() { [ "$(id -u 2>/dev/null)" = 0 ]; }
 # --- plan helper (regression-tested by .github/tests/test_fixes.py) ---
 plan_now() {   # prints "want_hz reason" for the current instant (MODE and heat respected)
   if hot; then
-    if [ "$HOT_HZ" -gt 0 ]; then printf '%s hot\n' "$HOT_HZ"; else printf '%s hot\n' "$MIN_HZ"; fi
+    if [ "$HOT_HZ" -gt 0 ]; then printf '%s hot\n' "$HOT_HZ"; else printf '%s hot\n' "$SLEEP_HZ"; fi
     return 0
   fi
   case "$MODE" in
     off)   printf '%s released\n' "$MIN_HZ" ;;
-    floor) printf '%s floor\n' "$TOP_HZ" ;;
+    floor) _sc=1; screen_on || _sc=0
+           if [ "$_sc" = 0 ]; then printf '%s screen-off\n' "$SLEEP_HZ"
+           else printf '%s floor\n' "$TOP_HZ"; fi ;;
     safer) _l=$(num_or "$(node_val "$N_UTIL")" 0)
            _st=0; [ "$_l" -ge "$LOAD_ON" ] && _st=1
            _sc=1; screen_on || _sc=0
@@ -539,8 +541,8 @@ status() {
     say "verdict: governor is off (ENABLED=0 in $CONF). The GPU follows GED demand only,"
     say "         which on this kernel means it sits at $L_MIN kHz almost all the time."
   elif [ "$MODE" = floor ]; then
-    say "verdict: governor on, MODE=floor - the floor stays at $(hz_text "$TOP_HZ")."
-    say "         ceiling target: $(hz_text "$CEIL_HZ")."
+    say "verdict: MODE=floor (max) - $(hz_text "$TOP_HZ") whenever the screen is on, and"
+    say "         $(hz_text "$SLEEP_HZ") while it is off. Ceiling target: $(hz_text "$CEIL_HZ")."
     if [ -n "$_ub" ] && { [ "$_ubi" != 0 ] && [ "$_ub" != "$L_MAX" ]; }; then
       say "         BUT the live upper bound is $_ub kHz (hal index $_ubi): until that is the top"
       say "         OPP, GED will not go above it. Run 'preset max' to set it."
@@ -746,8 +748,9 @@ preset() {   # $1 = safer | boost | max | stock
     return 0
   fi
   if [ "$MODE" = floor ]; then
-    say "note: floor = the top OPP. Battery drain rises; from $((TEMP_MAX / 10)) C"
-    say "      the floor drops to $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$SLEEP_HZ") kHz until it cools."
+    say "note: $(hz_text "$TOP_HZ") whenever the screen is on, $(hz_text "$SLEEP_HZ") while it is off."
+    say "      Battery drain rises; at/above $((TEMP_MAX / 10)) C the floor drops to"
+    say "      $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$SLEEP_HZ") kHz until it cools."
   elif [ "$MODE" = safer ]; then
     say "note: rests at $(hz_text "$MIN_HZ") and jumps to $(hz_text "$TOP_HZ") the moment the GPU *or*"
     say "      the CPU is busy - any app, any scrolling - keeping it ${HOLD_S}s after."
@@ -944,8 +947,12 @@ run() {   # the adaptive loop
     read -r _l _b _i 2>/dev/null < "$N_UTIL"
     LOAD=$(num_or "$_l" 0)
     REASON=""; _hot_new=0; _scr=1; _lowb=0; _cb=0
-    if [ "$MODE" = safer ]; then
+    # max and safer both need the screen state: max sleeps at the lowest OPP, safer uses it
+    # as the lowest rung of its policy.
+    if [ "$MODE" = floor ] || [ "$MODE" = safer ]; then
       screen_on || _scr=0
+    fi
+    if [ "$MODE" = safer ]; then
       low_battery && _lowb=1
       # "whole UI, not only games": the CPU-side of the UI counts as load too, but only
       # while the screen is on - a dark screen must never be kept awake by this.
@@ -961,7 +968,9 @@ run() {   # the adaptive loop
       _hot_logged=0
       case "$MODE" in
         off)   _res="0 $LAST"; REASON=off ;;
-        floor) _res="1 $NW"; REASON=mode ;;
+        # max: the top OPP while the screen is on, the lowest OPP while it is off
+        floor) if [ "$_scr" = 0 ]; then _res="0 $NW"; REASON=screen-off
+               else _res="1 $NW"; REASON=mode; fi ;;
         # safer: the screen being off is an instant release, not a held state; a busy CPU
         # requests the top OPP for exactly the tick it is busy, then HOLD_S keeps it there
         safer) if [ "$_scr" = 0 ]; then _res="0 $NW"

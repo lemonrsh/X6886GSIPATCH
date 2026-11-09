@@ -1,3 +1,12 @@
+v11.10 (2026-11-09) - max follows the screen: 1600 awake, 390 asleep
+* MODE=floor ('preset max') now reads the screen state too: 1600 MHz while the screen is
+  on, 390 MHz (SLEEP_HZ) while it is off, switching on the next 1 s tick. It used to stay
+  pinned at 1600 with the display dark, which is pure drain.
+* plan_now()/status preview the same decision: 'plan: ... screen-off -> level 44'.
+* 50 C still overrides everything in both profiles (390 until the phone cools).
+* plan_now()'s hot branch used MIN_HZ where the loop uses HOT_HZ/SLEEP_HZ; they agree now.
+* Tests: 41, incl. max sleeping at the lowest OPP and resuming at the top OPP.
+
 v11.9 (2026-11-09) - final fixed release: the repair commands actually exist
 * 'gpufix.sh ceil [kHz|0]' - the command the 1100 MHz warning told you to run did not
   exist. It publishes the GED upper bound now (0 = the top OPP), writes CEIL_HZ to
