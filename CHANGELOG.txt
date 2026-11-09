@@ -1,3 +1,35 @@
+v11.4 (GPU presets: max / boost / stock)
+* New `gpufix.sh preset NAME`, the one command that matters:
+    max    MODE=floor, TOP_HZ=0  -> floor = the fastest OPP (1600 MHz) all the time,
+           every app, every screen state. Whole-system maximum performance.
+    boost  MODE=adaptive, TOP_HZ=1200000 -> 390 MHz idle, 1200 MHz while busy (default).
+    stock  MODE=off -> release the floor, stock behaviour.
+  The preset writes the config (other keys and comments are kept) and applies the floor at
+  once when run as root, so no reboot and no hand-editing is needed.
+* TOP_HZ=0 now means "the fastest OPP this driver publishes" instead of being treated as
+  nonsense. Combined with MODE=floor that pins floor == ceiling == top OPP, which is what
+  "max performance always" actually is; `status` says so explicitly with a `pin:` line.
+* New HOT_HZ (default 0 = MIN_HZ): floor used while the battery is at/above TEMP_MAX. Set
+  e.g. HOT_HZ=900000 to stay fast-but-safe instead of dropping to stock when hot.
+* INTERVAL default 2 -> 1 s so the floor reacts within a second.
+* Fixed: the governor trusted a cached OPP index, so when the vendor power HAL rewrote
+  custom_boost_gpu_freq the loop did NOT put it back (reproduced in simulation). It now
+  re-reads the node every tick and corrects it; a write that keeps failing is logged
+  once a minute instead of silently.
+* Fixed: `status` reported `plan: level 44 (390000 kHz)` while MODE=floor TOP_HZ=0 was
+  actually asking for the top OPP (0 was being rewritten to MIN_HZ). 0 now passes through.
+* Fixed: `probe` called a pinned GPU "flat at the floor, proves nothing"; it now says
+  "held at the ceiling" and PASSes. It also compares against the floor this module asked
+  for and reports when something outside these nodes is holding the clock down.
+* Fixed: `preset` echoed the internal mode name instead of the preset name; node reads
+  no longer print "cannot open" noise under dash.
+* Fixed: service.sh launched gpufix.sh without its `boot` argument, so the loop never
+  started from the main module (the standalone module was unaffected).
+* Fixed: the standalone module reused the main patch's /data/adb/fod state; it now uses
+  /data/adb/gpufix (GPUFIX_STATE overrides), so the two never edit each other's config.
+* Tests: 27 host cases (bash + dash) covering presets, config rewriting, plan modes and
+  heat, sticky/hold, OPP index resolution, and that the two gpufix.sh copies are identical.
+
 v11.3 (load-following GPU governor, opt-in)
 * New gpufix.sh: an adaptive GPU floor, not a static one. It samples GED's own load
   counter (/sys/kernel/ged/hal/gpu_utilization) every INTERVAL s and moves the boost

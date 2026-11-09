@@ -1,6 +1,48 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v11.4 GPU presets: max / boost / stock
+
+One command sets the whole policy:
+
+```sh
+M=/data/adb/modules/gpu_dvfs_x6886       # or .../X6886_GSI_PATCH_level_1_by_lemonrsh
+su -c "sh $M/gpufix.sh preset max"       # fastest OPP (1600 MHz) all the time, whole system
+su -c "sh $M/gpufix.sh preset boost"     # 390 MHz idle -> 1200 MHz while busy (default)
+su -c "sh $M/gpufix.sh preset stock"     # release the floor, stock behaviour
+```
+
+| preset | `MODE` | floor | behaviour |
+| --- | --- | --- | --- |
+| `max` | `floor` | fastest OPP (`TOP_HZ=0` -> 1600 MHz) | pinned at the top, every app and screen state |
+| `boost` | `adaptive` | 1200 MHz while busy, 390 idle | follows `gpu_utilization`, holds 20 s |
+| `stock` | `off` | 390 MHz | nothing is raised |
+
+`preset` rewrites `/data/adb/fod/gpu.conf` (or `/data/adb/gpufix/gpu.conf` for the
+standalone module) keeping your other keys and comments, and applies the floor
+immediately when run as root. Above `TEMP_MAX` battery temperature the floor drops to
+`HOT_HZ` (default 0 = stock floor) until the phone cools.
+
+**`max` means pinned.** Floor == ceiling == 1600 MHz, so the GPU has no lower step to
+fall back to. That is the "maximum always, whole system" behaviour, with the battery
+drain and heat that come with it. `boost` gives most of the responsiveness for far less.
+
+`gpufix.sh status` prints the state, the live load, the floor this module asked for and
+what it would do next; `probe 20` samples frequency and load and tells you whether the
+GPU actually moved.
+
+### How the floor works
+
+On this device the GPU is not locked — `gpu_dvfs_enable=1` and
+`[GPU-LimitC] CeilingIndex: 0` — but GED's boost path is inert (`boost_gpu_enable=0`,
+`gpu_cust_boost_freq=390000` = the slowest OPP), so in practice the clock sat at 390 MHz
+unless GED itself saw sustained 3D work. The governor moves that path's target instead:
+it resolves the requested frequency against the live OPP ladder and writes the ladder
+**index** to `/sys/kernel/ged/hal/custom_boost_gpu_freq`, syncing
+`gpu_cust_boost_freq` and `boost_gpu_enable=1`. The ceiling and `gpu_dvfs_enable` are
+never written. The loop re-reads the node every tick, so a vendor power HAL that
+rewrites it gets corrected; `revert` (or a reboot) restores the snapshot.
+
 ## v11.3 load-following GPU governor (opt-in)
 
 On this device the GPU is not locked — `gpu_dvfs_enable=1` and

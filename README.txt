@@ -1,4 +1,4 @@
-X6886 GSI PATCH by lemonrsh — v11.3 (see CHANGELOG.txt; original base v10.7: 120 Hz always + FOD stability)
+X6886 GSI PATCH by lemonrsh — v11.4 (see CHANGELOG.txt; original base v10.7: 120 Hz always + FOD stability)
 ====================================
 
 This release removes the non-working screen-on-time (SOT) watcher completely.
@@ -35,16 +35,17 @@ Diagnostics: run
   su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh'
 The diagnostic script intentionally does not inspect or alter Settings SOT data.
 
-GPU (v11.3, optional): gpufix.sh makes the GPU floor follow load.
-  sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/gpufix.sh status
-  su -c 'sh .../gpufix.sh probe 30'    # run while scrolling / inside a 3D game
-It is off in this module until you set ENABLED=1 in /data/adb/fod/gpu.conf, or install
+GPU (v11.4, optional): gpufix.sh controls the GPU floor. Three presets:
+  su -c 'sh .../gpufix.sh preset max'    # fastest OPP (1600 MHz) always, whole system
+  su -c 'sh .../gpufix.sh preset boost'  # 390 MHz idle -> 1200 MHz while busy (default)
+  su -c 'sh .../gpufix.sh preset stock'  # release the floor
+"max" pins floor = ceiling = 1600 MHz: maximum performance with the battery and heat
+cost that implies; above 43 C battery the floor drops to HOT_HZ (default stock) until
+the phone cools. "boost" follows GED's own load counter instead.
+In this module the governor is off until ENABLED=1 in /data/adb/fod/gpu.conf, or install
 the separate GPU-DVFS-X6886 module from the same release (same script, governor on,
-state in /data/adb/gpufix). With the governor on the floor is 390 MHz while idle and
-1200 MHz while gpu_utilization >= 60 %, held 20 s, released at 43 C battery.
-Ceiling (1600 MHz) and gpu_dvfs_enable are never touched: the GPU still idles at
-390 MHz and still scales by demand inside the window.
-  su -c 'sh .../gpufix.sh revert'  (or reboot) restores the stock values.
+state in /data/adb/gpufix).
+Check: sh .../gpufix.sh status | probe 30      Undo: sh .../gpufix.sh revert (or reboot)
 
 Installer compatibility: the Goodix HAL hash is checked against the supported
 X6886 hashes. Installation aborts if the device HAL is not recognized.

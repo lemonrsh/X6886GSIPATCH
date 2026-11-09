@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh v11.3 FIX
-version=v11.3
-versionCode=115
+name=X6886 GSI PATCH by lemonrsh v11.4 FIX
+version=v11.4
+versionCode=116
 author=lemonrsh
-description=X6886 GSI patch v11.3: adds the opt-in GPU DVFS helper (gpufix.sh: status/probe, guarded apply, revert) on top of v11.2.2 HBM watchdog, single-instance FOD/SOFOD helpers and AOD-aware idle dexopt; DT2W removed.
+description=X6886 GSI patch v11.4: opt-in GPU governor (gpufix.sh preset max/boost/stock, whole-system floor) on top of the v11.2.2 HBM watchdog, single-instance FOD/SOFOD helpers and AOD-aware idle dexopt; DT2W removed.

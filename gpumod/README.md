@@ -28,14 +28,27 @@ floor when load >= `LOAD_ON` %, and holds it for `HOLD_S` s. It drops back at
 
 ### Install / configure
 
-Flash the ZIP, reboot. Config lives in `/data/adb/gpufix/gpu.conf` (off `min`).
+Flash the ZIP, reboot. Config lives in `/data/adb/gpufix/gpu.conf`.
 
 ```sh
 M=/data/adb/modules/gpu_dvfs_x6886
-sh $M/gpufix.sh status        # state, live load, plan, verdict
-sh $M/gpufix.sh probe 20      # use the phone normally while it runs
-su -c "sh $M/gpufix.sh revert" # undo the nodes (a reboot does too)
+su -c "sh $M/gpufix.sh preset max"    # fastest OPP always, whole system
+su -c "sh $M/gpufix.sh preset boost"  # 390 idle -> 1200 busy (default)
+su -c "sh $M/gpufix.sh preset stock"  # release the floor
+sh $M/gpufix.sh status                # state, live load, floor asked for, plan
+sh $M/gpufix.sh probe 20              # use the phone normally while it runs
+su -c "sh $M/gpufix.sh revert"        # undo the nodes (a reboot does too)
 ```
+
+| preset | floor | note |
+| --- | --- | --- |
+| `max` | 1600 MHz always (`TOP_HZ=0`, `MODE=floor`) | floor == ceiling, GPU cannot idle down |
+| `boost` | 1200 MHz while busy, 390 idle | follows `gpu_utilization`, holds 20 s |
+| `stock` | 390 MHz | nothing raised |
+
+Above `TEMP_MAX` (43 C battery) the floor drops to `HOT_HZ` (default 0 = stock floor)
+until the phone cools; set `HOT_HZ=900000` to stay fast-but-safe instead. The loop
+re-reads the config every ~15 ticks, so edits apply without a restart.
 
 Remove the module in Magisk to stop it; `uninstall.sh` also restores the nodes.
 

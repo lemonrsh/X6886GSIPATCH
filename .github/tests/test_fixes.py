@@ -398,6 +398,98 @@ STATUS={str(pathlib.Path(td) / 'missing')!r}
             self.assertEqual(out.split(), ["0", "1600000"])
 
 
+class GpuPresetTests(unittest.TestCase):
+    """Presets and config rewriting: `preset max` must mean "top OPP, always"."""
+
+    def setUp(self):
+        self.block = marked_block(
+            read("gpufix.sh"),
+            "# --- preset helpers (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end preset helpers ---",
+        )
+
+    def run_block(self, body):
+        script = f"""
+set -eu
+{self.block}
+{body}
+"""
+        out = []
+        for shell in SHELLS:
+            result = run_shell(shell, script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out.append(result.stdout)
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
+        return out[0]
+
+    def test_preset_values(self):
+        self.assertEqual(self.run_block('preset_values max').split(), ["floor", "0", "60", "20", "1"])
+        self.assertEqual(self.run_block('preset_values boost').split(), ["adaptive", "1200000", "60", "20", "1"])
+        self.assertEqual(self.run_block('preset_values stock').split(), ["off", "390000", "60", "0", "2"])
+        self.assertEqual(self.run_block('if preset_values nope; then echo bad; else echo refused; fi').strip(), "refused")
+
+    def test_setkey_replaces_and_appends_without_losing_comments(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = pathlib.Path(td) / "gpu.conf"
+            cfg.write_text("# keep me\nENABLED=0\nMODE=adaptive\n")
+            body = f"""
+setkey {str(cfg)!r} MODE floor
+setkey {str(cfg)!r} TOP_HZ 0
+setkey {str(cfg)!r} ENABLED 1
+"""
+            self.run_block(body)
+            text = cfg.read_text()
+            self.assertIn("# keep me", text)
+            self.assertEqual(text.count("MODE="), 1)
+            self.assertIn("MODE=floor", text)
+            self.assertIn("TOP_HZ=0", text)
+            self.assertIn("ENABLED=1", text)
+            self.assertFalse(list(cfg.parent.glob("*.tmp")))
+
+
+class GpuPlanTests(unittest.TestCase):
+    """plan_now() decides what the governor asks for right now."""
+
+    def plan(self, mode, top, hot=1, hot_hz=0, load=0, min_hz=390000, load_on=60):
+        block = marked_block(
+            read("gpufix.sh"),
+            "# --- plan helper (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end plan helper ---",
+        )
+        script = f"""
+set -eu
+MODE={mode}; TOP_HZ={top}; MIN_HZ={min_hz}; HOT_HZ={hot_hz}; LOAD_ON={load_on}
+N_UTIL=/nonexistent
+num_or() {{ case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }}
+{block}
+hot() {{ [ {hot} = 1 ]; }}
+node_val() {{ echo {load}; }}
+plan_now
+"""
+        out = []
+        for shell in SHELLS:
+            result = run_shell(shell, script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out.append(result.stdout.strip())
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
+        return out[0]
+
+    def test_floor_mode_asks_for_the_fastest_opp(self):
+        # TOP_HZ=0 is "fastest OPP"; plan_now must pass the 0 through untouched.
+        self.assertEqual(self.plan("floor", 0, hot=0), "0 floor")
+        self.assertEqual(self.plan("floor", 1200000, hot=0), "1200000 floor")
+
+    def test_off_and_adaptive(self):
+        self.assertEqual(self.plan("off", 1200000, hot=0), "390000 released")
+        self.assertEqual(self.plan("adaptive", 1200000, hot=0, load=85), "1200000 busy")
+        self.assertEqual(self.plan("adaptive", 1200000, hot=0, load=10), "390000 idle")
+
+    def test_hot_battery_releases(self):
+        self.assertEqual(self.plan("floor", 0, hot=1), "390000 hot")
+        # an explicit HOT_HZ keeps a warm-but-fast floor instead of the stock one
+        self.assertEqual(self.plan("floor", 0, hot=1, hot_hz=900000), "900000 hot")
+
+
 class GpuGovernorTests(unittest.TestCase):
     """sticky_step / pick_target decide when the GPU floor is raised.
 
