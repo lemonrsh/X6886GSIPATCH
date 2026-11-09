@@ -1,6 +1,19 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v11.9 Repair commands
+
+```sh
+su -c "sh $M/gpufix.sh ceil 0"      # publish the top OPP on GED's upper bound (repairs 1100 MHz)
+su -c "sh $M/gpufix.sh ceil 1200000"  # or a fixed bound, when the ladder is readable
+su -c "sh $M/gpufix.sh release"     # floor to the lowest OPP (390) - works without /proc
+su -c "sh $M/gpufix.sh status"      # state, plan, ceiling, safer decision, loop pid
+```
+
+`ceil` writes the bound, reads it back and tells you the resulting hal index; on a build
+where `/proc/gpufreqv2` is denied only `ceil 0` (the top OPP) can be set, and it says so.
+`release` always means the **lowest** OPP, never the safer profile's 790 MHz rest floor.
+
 ## v11.8 SAFER now really reaches 1600: the ceiling is lifted too
 
 **Bug (reported): "safer variant shows max 1100 MHz".** The floor asked for 1600 MHz but the

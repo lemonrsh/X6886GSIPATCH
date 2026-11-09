@@ -51,11 +51,12 @@
 #   status (default)  report + what the governor would do right now; writes nothing
 #   probe [SECONDS]   sample frequency/load and say whether scaling works
 #   apply [HZ]        one-shot: set the boost floor to HZ (default TOP_HZ)
-#   release           set the boost floor back to MIN_HZ
 #   verify [SECONDS]   like probe, with PASS/FAIL wording
 #   run               the adaptive loop (foreground; service.sh runs it in background)
 #   boot              what service.sh calls: start the loop when ENABLED=1
 #   revert            restore the values saved by the first write (a reboot does too)
+#   ceil [HZ]         publish the GED upper bound (0 = the top OPP); repairs a 1100 MHz cap
+#   release           drop the floor to SLEEP_HZ (the lowest OPP), works offline
 #   preset NAME       safer | boost | max | stock - writes the config and applies at once
 #   choose            installer helper: asks with the volume keys (up=safer, down=max)
 #
@@ -465,11 +466,15 @@ write_floor() {   # writes an ALREADY resolved R_IDX/R_FREQ (no ladder lookup)
 floor_to() {   # $1 = kHz; resolves the OPP then writes it (see write_floor)
   if ! ladder_available; then
     # No ladder: only the two ends can be named. "Release" means the lowest OPP, which is
-    # TOP_INDEX on this kernel (44 = 390 MHz) - offline_index alone cannot name it.
+    # TOP_INDEX on this kernel (44 = 390 MHz). L_MIN is only known if the ladder was read
+    # at some point, so fall back to SLEEP_HZ - the configured bottom - rather than fail.
     _hz=$(num_or "$1" 0)
+    _low=$(num_or "$SLEEP_HZ" 390000)
     case "$_hz" in
       0) offline_top ;;
-      *) if [ -n "$L_MIN" ] && [ "$_hz" -le "$L_MIN" ]; then
+      *) if [ "$_hz" -le "$_low" ]; then
+           R_IDX=$TOP_INDEX; R_FREQ=$SLEEP_HZ
+         elif [ -n "$L_MIN" ] && [ "$_hz" -le "$L_MIN" ]; then
            R_IDX=$TOP_INDEX; R_FREQ=$L_MIN
          else
            offline_index "$_hz" || return 1
@@ -552,6 +557,12 @@ status() {
       say "           The floor can ask for 1600 all it likes; GED will not go above this."
       say "           Fix: '$ME preset safer' (lifts both), or '$ME ceil 0'."
     fi
+  elif [ "$MODE" = off ]; then
+    say "verdict: MODE=off - the floor is parked at $(hz_text "$SLEEP_HZ") (the lowest OPP); nothing"
+    say "         is raised, so GED's own demand handling decides the clock."
+  elif [ "$MODE" = adaptive ]; then
+    say "verdict: MODE=adaptive - floor moves to $(hz_text "$TOP_HZ") while the GPU is busy, back to"
+    say "         $(hz_text "$MIN_HZ") after ${HOLD_S}s idle. (CPU load does not raise it; use safer.)"
   else
     say "verdict: governor on - floor moves to $(hz_text "$TOP_HZ") while busy, back to $(hz_text "$MIN_HZ") when idle."
   fi
@@ -794,20 +805,59 @@ apply() {   # $1 = Hz for the floor, default TOP_HZ
   say "undo:   $ME revert    (or reboot)"
 }
 
+ceil() {   # $1 = kHz for the GED upper bound, 0 = the top OPP (default CEIL_HZ)
+  # GED will not run above this bound. A stock 1100000 is why a floor asking for 1600
+  # stopped at 1100 MHz, so this is the one-shot repair for that state.
+  _want=$(num_or "$1" "$CEIL_HZ")
+  is_root || { say "ceil needs root (su -c '$ME ceil 0')"; return 1; }
+  case "$_want" in ''|*[!0-9]*) say "usage: $ME ceil [kHz|0]   (0 = the top OPP)"; return 2 ;; esac
+  if [ "$_want" != 0 ] && ! ladder_stats; then
+    say "cannot read the GPU OPP ladder ($TABLES); only 0 (the top OPP) can be set here."
+    return 1
+  fi
+  say "ceiling: requested $(hz_text "$_want")"
+  ceil_to "$_want"
+  case $? in
+    0) both "ceiling now level $R_IDX ($(hz_text "$R_FREQ"))"
+       setkey "$CONF" CEIL_HZ "$_want" ;;
+    2) say "ceiling already level $R_IDX ($(hz_text "$R_FREQ"))"
+       setkey "$CONF" CEIL_HZ "$_want" ;;
+    *) say "! could not move the ceiling (custom_upbound_gpu_freq reads $(node_val "$N_UPBOUND"))"; return 1 ;;
+  esac
+  _ub=$(node_val "$P_UPBOUND"); _ubi=$(node_val "$N_UPBOUND")
+  say "check:  custom_upbound_gpu_freq=$_ubi gpu_cust_upbound_freq=${_ub:-?}"
+  [ "$_ubi" = 0 ] || say "! note: the hal index is not 0 yet; GED may still cap the GPU below the top OPP."
+  # Offline we cannot name a mid-ladder frequency, so only report what the node says.
+  if [ -n "$_ub" ] && [ "$_ub" != 0 ] && [ "$_ubi" = 0 ] && [ "$_want" = 0 ] &&
+     ! ladder_available; then
+    say "note:   the hal index is 0 (the top OPP); the kHz parameter still reads $_ub because"
+    say "        the ladder is unreadable here. GED enforces the index, so this is expected."
+  fi
+  say "undo:   $ME revert    (or reboot)"
+}
+
 release() {
   is_root || { say "release needs root"; return 1; }
-  ladder_stats || { say "ladder not readable"; return 1; }
-  resolve_opp "$MIN_HZ" || return 1
-  floor_to "$MIN_HZ"
-  case $? in
-    0) both "floor released to level $R_IDX ($R_FREQ kHz)" ;;
-    2) say "floor already at $R_FREQ kHz" ;;
-    *) say "! could not release the floor"; return 1 ;;
+  # "release" means the lowest OPP, and it has to work on a build where /proc is denied:
+  # floor_to() knows how to name the bottom of the ladder in both cases.
+  floor_to "$SLEEP_HZ"
+  _rc=$?
+  _now=$(node_val "$N_BOOST")
+  case $_rc in
+    0) both "floor released to level $_now ($(hz_text "$SLEEP_HZ"))" ;;
+    2) say "floor already at level $_now ($(hz_text "$SLEEP_HZ")) - nothing written" ;;
+    *) if [ "$_now" = "${R_IDX:-}" ] || { [ -n "$_now" ] && [ "$_now" = "$TOP_INDEX" ]; }; then
+         say "floor is at level $_now (the lowest OPP) - nothing to do"
+       else
+         say "! could not release the floor (custom_boost_gpu_freq reads ${_now:-?})"; return 1
+       fi ;;
   esac
 }
 
 ceil_to() {   # publishes GED's upper bound: index on the hal node, kHz on the parameter
-  # $1 = kHz; 0 = fastest OPP.
+  # $1 = kHz; 0 = fastest OPP. Sets R_IDX/R_FREQ for the requested value first: on a
+  # ladder-unreadable build R_FREQ is 0 (unknown), so a readback compare must not use the
+  # stale frequency from an earlier resolve.
   [ -n "$CEIL_HZ" ] || { say "ceiling control disabled (CEIL_HZ empty)"; return 2; }
   _want=$1; _want=$(num_or "$_want" "")        # 0 stays 0: index 0 is the fastest OPP
   if ! ladder_available; then
@@ -821,9 +871,7 @@ ceil_to() {   # publishes GED's upper bound: index on the hal node, kHz on the p
     resolve_opp "$_want" || return 1
   fi
   _cur=$(node_val "$N_UPBOUND")
-  if [ "$_cur" = "$R_IDX" ] && [ "$(node_val "$P_UPBOUND")" = "$R_FREQ" ]; then
-    return 2
-  fi
+  [ "$_cur" = "$R_IDX" ] && return 2      # the hal index is what GED enforces
   snapshot
   write_node "$N_UPBOUND" "$R_IDX" || return 1
   # Only publish a frequency we actually know; offline we do not, and writing 0 kHz there
@@ -1014,12 +1062,13 @@ case "$1" in
   probe) sample "${2:-$SAMPLE_S}" probe ;;
   verify) sample "${2:-$SAMPLE_S}" verify ;;
   apply) apply "$2" ;;
+  ceil) ceil "$2" ;;
   preset) shift; preset "$1" ;;
   choose) choose_preset ;;
   release) release ;;
   run) run ;;
   revert) revert ;;
   boot) boot ;;
-  help|-h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) say "usage: $ME [status|probe [s]|apply [hz]|release|preset safer|boost|max|stock|verify [s]|run|revert|boot]"; exit 2 ;;
+  help|-h|--help) sed -n '/^# Modes:/,/^# Config:/p' "$0" | sed 's/^# \{0,1\}//;$d' ;;
+  *) say "usage: $ME [status|probe [s]|apply [hz]|ceil [hz|0]|release|preset safer|boost|max|stock|verify [s]|run|revert|boot]"; exit 2 ;;
 esac

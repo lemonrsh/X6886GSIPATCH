@@ -1,3 +1,21 @@
+v11.9 (2026-11-09) - final fixed release: the repair commands actually exist
+* 'gpufix.sh ceil [kHz|0]' - the command the 1100 MHz warning told you to run did not
+  exist. It publishes the GED upper bound now (0 = the top OPP), writes CEIL_HZ to
+  gpu.conf, reads the result back and explains an offline readback. On a ladder-unreadable
+  build only 0 is settable, and it says so instead of guessing an index.
+* 'release' works without a readable ladder and drops to SLEEP_HZ (the lowest OPP,
+  390 MHz) instead of MIN_HZ - on a safer install MIN_HZ is 790, which is not a release.
+  It also no longer reports failure when the floor is already at the bottom.
+* ceil_to() sets R_IDX/R_FREQ for the requested value before comparing: it used to compare
+  against the stale frequency of an earlier resolve, so 'ceil 1200000' could say "already
+  level 0" while the node still held the top OPP.
+* floor_to()'s offline path no longer needs L_MIN (only known when a ladder was read):
+  it uses SLEEP_HZ/TOP_INDEX, so releasing from the top OPP works offline.
+* status: MODE=off and MODE=adaptive got their own verdicts. 'stock' used to print
+  "floor moves to 390 kHz while busy, back to 390 kHz when idle", which was nonsense.
+* Tests: 40 host cases, incl. one that fails the build if output tells the user to run a
+  command that is not dispatched, and one that pins release to SLEEP_HZ without a ladder.
+
 v11.8 (2026-11-09) - FIXED: safer topped out at 1100 MHz
 * Reported on device: the safer variant showed a 1100 MHz maximum. Cause: 'preset safer'
   moved the GED floor but never the GED upper bound, which was still the stock
