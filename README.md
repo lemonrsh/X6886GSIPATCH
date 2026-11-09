@@ -1,6 +1,38 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v12: one command, and the 1100 MHz cap is gone for real
+
+**The actual cause** of "safer still shows 1100 MHz": on a build where `/proc/gpufreqv2` is
+denied, the script could name a ladder *index* but not its *frequency*. So it wrote index 0
+to `custom_upbound_gpu_freq` and left `gpu_cust_upbound_freq` at the stock `1100000`. GED
+enforces the kHz parameter — the GPU stayed at 1100 MHz while every index looked perfect.
+
+Fixed by knowing both ends of the ladder from the config (`TOP_HZ_KHZ=1600000`,
+`BOTTOM_HZ_KHZ=390000`) and always publishing a real frequency alongside the index.
+
+### If you already flashed something older
+
+```sh
+su -c "sh /data/adb/modules/gpu_dvfs_x6886/gpufix.sh reapply"
+```
+
+No arguments, no node editing. It repairs the config values older installers left behind
+(`TEMP_MAX 430 -> 500`, `CEIL_HZ 1600000 -> 0`, `MIN_HZ 390000 -> 790000` for safer,
+missing `SAFE_INDEX`), publishes the ceiling and the floor as **index + kHz**, and wakes
+the running loop. Fresh flashes run it automatically, so a reflash is enough.
+
+### Reading `status` honestly
+
+`status` now prints the battery temperature against the limit, and shouts when a hal index
+and its kHz parameter disagree:
+
+```
+temp:  38 C   limit=50 C (nothing throttled below it)
+ceil:  hal index 0 means 1600000 kHz, but cust_upbound_freq reads 1100000.
+       That stale parameter is what caps the GPU. Fix: 'reapply'.
+```
+
 ## v11.10 MAX sleeps at 390 MHz with the screen off
 
 `max` no longer sits at 1600 MHz with the screen dark. It now follows the screen:

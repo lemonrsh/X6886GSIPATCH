@@ -112,10 +112,13 @@ addkey "$DATA/fod/gsi.conf" DEX_INSTALL_VERIFY 1
 addkey "$DATA/fod/gsi.conf" FAST_FIRST_BOOT 1
 addkey "$DATA/fod/gsi.conf" BOOT_THREADS 0
 addkey "$DATA/fod/gpu.conf" SYNC_PARAM 1
-# v11.6: the throttle is a single limit at 50 C; nothing is throttled below it.
-if grep -q '^TEMP_MAX=430$' "$DATA/fod/gpu.conf" 2>/dev/null; then
-  sed -i 's/^TEMP_MAX=430$/TEMP_MAX=500/' "$DATA/fod/gpu.conf"
-  ui_print "- gpu.conf: TEMP_MAX 430 -> 500 (throttle only at 50 C)"
+# v11.6/v12: the throttle is a single limit at 50 C; nothing is throttled below it.
+# The original migration was anchored to the end of the line, so it never matched the
+# configs this installer writes (every line carries a trailing comment): phones kept
+# throttling at 43 C while every message said 50 C.
+if grep -q '^TEMP_MAX=430' "$DATA/fod/gpu.conf" 2>/dev/null; then
+  sed -i 's/^TEMP_MAX=430.*/TEMP_MAX=500         # ONLY at/above this temperature (deci-degC = 50 C) the floor drops/' "$DATA/fod/gpu.conf"
+  ui_print "- gpu.conf: TEMP_MAX 430 -> 500 (throttle only at 50 C, was 43 C)"
 fi
 addkey "$DATA/fod/gpu.conf" TEMP_MAX 500
 addkey "$DATA/fod/gpu.conf" SAMPLE_S 10
@@ -129,12 +132,14 @@ addkey "$DATA/fod/gpu.conf" TOP_HZ 0
 addkey "$DATA/fod/gpu.conf" SCREEN_OFF_MIN 1
 addkey "$DATA/fod/gpu.conf" BAT_MIN 15
 addkey "$DATA/fod/gpu.conf" SLEEP_HZ 390000
+addkey "$DATA/fod/gpu.conf" TOP_HZ_KHZ 1600000
+addkey "$DATA/fod/gpu.conf" BOTTOM_HZ_KHZ 390000
 addkey "$DATA/fod/gpu.conf" CPU_ON 60
 addkey "$DATA/fod/gpu.conf" SAFE_INDEX ""
 # v11.8: a safer install must also lift GED's upper bound, or the stock 1100 MHz cap wins.
 if [ "$(sed -n 's/^MODE=//p' "$DATA/fod/gpu.conf" 2>/dev/null | head -n 1)" = safer ]; then
   if ! grep -q '^CEIL_HZ=' "$DATA/fod/gpu.conf"; then echo 'CEIL_HZ=0' >> "$DATA/fod/gpu.conf"
-  else sed -i 's/^CEIL_HZ=1600000$/CEIL_HZ=0/' "$DATA/fod/gpu.conf"; fi
+  else sed -i 's/^CEIL_HZ=1600000.*/CEIL_HZ=0            # 0 = the top OPP/' "$DATA/fod/gpu.conf"; fi
 fi
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling
@@ -173,6 +178,8 @@ _CH=$(cat "$MODPATH/.choice" 2>/dev/null)
 rm -f "$MODPATH/.choice"
 case "$_CH" in
   safer|max) sh "$MODPATH/gpufix.sh" preset "$_CH" >&2 || true
+             # v12: publish the nodes immediately, no reboot and no manual step needed
+             sh "$MODPATH/gpufix.sh" reapply 2>&1 | sed 's/^/  /'
              ui_print "  -> enabled with preset $_CH"
              ui_print "  Change it later: su -c 'sh /data/adb/modules/X6886*/gpufix.sh preset safer|max'" ;;
   *)         ui_print "  -> skipped. Enable later: su -c 'sh /data/adb/modules/X6886*/gpufix.sh preset safer'"

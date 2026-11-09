@@ -1,3 +1,28 @@
+v12 (2026-11-09) - no more manual steps: the kHz parameters are always written
+* ROOT CAUSE of "safer still shows 1100 MHz": on a build where /proc/gpufreqv2 is denied,
+  the script could name a ladder index but not its frequency, so it wrote "index 0" to
+  custom_upbound_gpu_freq while gpu_cust_upbound_freq kept the stock 1100000. GED enforces
+  the kHz parameter, so the GPU stayed at 1100 while every index looked correct. Both write
+  paths now publish a real frequency: the live ladder when readable, otherwise the new
+  TOP_HZ_KHZ / BOTTOM_HZ_KHZ config keys (1600000 / 390000).
+* NEW 'reapply' (aliases 'fix', 'repair'): one command, no arguments, no node editing.
+  It heals values older installers left behind (TEMP_MAX 430 -> 500, CEIL_HZ 1600000 -> 0,
+  MIN_HZ 390000 -> 790000 for safer, missing SAFE_INDEX, CPU_ON=0), then publishes both the
+  ceiling and the floor as index + kHz, and wakes the running loop.
+* Both installers now run 'reapply' at the end of the flash when a profile was chosen, so
+  an update takes effect immediately instead of waiting for a reboot or a manual command.
+* ceiling: a spelled-out top OPP (CEIL_HZ=1600000) is accepted on a denied ladder as
+  index 0 instead of being refused - the refusal is why the v11.8 fix did nothing on device.
+* floor: on a denied ladder MIN_HZ resolves through SAFE_INDEX instead of failing.
+* FIXED (again, properly this time): the TEMP_MAX 430 -> 500 migration was anchored to the
+  end of the line, so it never matched the configs our own installer writes (every line has
+  a trailing comment). Every phone kept throttling to 390 at 43 C while the messages said
+  50 C. The migration is comment-tolerant now, and 'reapply' checks the VALUE as well.
+* status prints the battery temperature against the limit, and reports a hal index whose
+  kHz parameter disagrees with it - the exact bug that took four rounds of pasting to find.
+* top_khz()/bottom_khz() tolerate empty or non-numeric values instead of aborting.
+* Tests: 45, incl. the index/kHz sync rules and the offline top/bottom resolution.
+
 v11.10 (2026-11-09) - max follows the screen: 1600 awake, 390 asleep
 * MODE=floor ('preset max') now reads the screen state too: 1600 MHz while the screen is
   on, 390 MHz (SLEEP_HZ) while it is off, switching on the next 1 s tick. It used to stay

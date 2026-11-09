@@ -56,6 +56,7 @@
 #   boot              what service.sh calls: start the loop when ENABLED=1
 #   revert            restore the values saved by the first write (a reboot does too)
 #   ceil [HZ]         publish the GED upper bound (0 = the top OPP); repairs a 1100 MHz cap
+#   reapply           re-publish the whole config to the nodes (indices AND kHz), no args
 #   release           drop the floor to SLEEP_HZ (the lowest OPP), works offline
 #   preset NAME       safer | boost | max | stock - writes the config and applies at once
 #   choose            installer helper: asks with the volume keys (up=safer, down=max)
@@ -107,6 +108,12 @@ TEMP_MAX=500         # ONLY at or above this battery temperature (deci-degC = 50
 HOT_HZ=0             # floor while >= TEMP_MAX; 0 = use MIN_HZ (e.g. 900000 to stay warm-but-fast)
 CEIL_HZ=1600000      # GED upper bound to publish: kHz, or 0 for the fastest OPP
 TOP_INDEX=44         # ladder index of the slowest OPP; used only when the ladder is unreadable
+# The two ends of the ladder in kHz. Without them, "index 0" and "index 44" can be written
+# to the hal nodes while the matching gpu_cust_*_freq parameters keep a stale value - on
+# this device that meant index 0 with cust_upbound_freq=1100000 (the stock 1100 MHz cap),
+# so the GPU never passed 1100 however correct the indices were.
+TOP_HZ_KHZ=1600000   # kHz of the fastest OPP (TOP_INDEX/TOP_HZ=0 refer to this)
+BOTTOM_HZ_KHZ=390000 # kHz of the slowest OPP (SLEEP_HZ / TOP_INDEX)
 SYNC_PARAM=1         # keep gpu_cust_boost_freq (module parameter) in sync with the floor
 SAMPLE_S=10          # default probe/verify window
 num_or() {   # $1 value, $2 fallback -> prints a sane non-negative integer
@@ -139,6 +146,8 @@ CPU_ON=$(num_or "$CPU_ON" 0)
 [ "$CPU_ON" -le 100 ] || CPU_ON=100
 SAFE_INDEX=$(num_or "$SAFE_INDEX" "")
 TOP_INDEX=$(num_or "$TOP_INDEX" 44)
+TOP_HZ_KHZ=$(num_or "$TOP_HZ_KHZ" 1600000)
+BOTTOM_HZ_KHZ=$(num_or "$BOTTOM_HZ_KHZ" "$SLEEP_HZ")
 CEIL_HZ=$(num_req "$CEIL_HZ" 1600000)    # 0 = top OPP; empty is not allowed for the ceiling
 SYNC_PARAM=$(num_or "$SYNC_PARAM" 1)
 SAMPLE_S=$(num_or "$SAMPLE_S" 10)
@@ -192,10 +201,35 @@ OPPEOF
   [ -n "$R_FREQ" ] || { R_IDX=$_fast_i; R_FREQ=$_fast_f; }
   [ -n "$R_FREQ" ]
 }
+# --- OPP end helper (regression-tested by .github/tests/test_fixes.py) ---
 offline_top() {   # no ladder: index 0 is the driver's name for the fastest OPP
-  R_IDX=0; R_FREQ=0
+  # R_FREQ is what the kHz parameters must say. It is 0 only when even the configured
+  # top frequency is unknown; top_khz() supplies it from TOP_HZ_KHZ / a known L_MAX.
+  R_IDX=0; R_FREQ=$(top_khz)
   return 0
 }
+bottom_khz() {   # kHz of the slowest OPP: the live ladder wins, else BOTTOM_HZ_KHZ
+  case "${L_MIN:-}" in
+    ''|*[!0-9]*) case "${BOTTOM_HZ_KHZ:-}" in
+                   ''|*[!0-9]*) case "${SLEEP_HZ:-}" in
+                                   ''|*[!0-9]*) printf '390000\n' ;;
+                                   *) printf '%s\n' "$SLEEP_HZ" ;;
+                                 esac ;;
+                   *) printf '%s\n' "$BOTTOM_HZ_KHZ" ;;
+                 esac ;;
+    *) [ "$L_MIN" -gt 0 ] && printf '%s\n' "$L_MIN" || printf '390000\n' ;;
+  esac
+}
+top_khz() {   # kHz of the fastest OPP: the live ladder wins, else TOP_HZ_KHZ
+  case "${L_MAX:-}" in
+    ''|*[!0-9]*) case "${TOP_HZ_KHZ:-}" in
+                   ''|*[!0-9]*) printf '1600000\n' ;;
+                   *) printf '%s\n' "$TOP_HZ_KHZ" ;;
+                 esac ;;
+    *) [ "$L_MAX" -gt 0 ] && printf '%s\n' "$L_MAX" || printf '1600000\n' ;;
+  esac
+}
+# --- end OPP end helper ---
 offline_index() {   # $1 = kHz -> index via the shell-only fallback; sets R_IDX R_FREQ
   case "$1" in
     ''|0) offline_top; return 0 ;;
@@ -461,7 +495,13 @@ write_floor() {   # writes an ALREADY resolved R_IDX/R_FREQ (no ladder lookup)
   fi
   snapshot
   write_node "$N_BOOST" "$R_IDX" || return 1
-  if [ "$SYNC_PARAM" = 1 ] && [ -n "$R_FREQ" ] && [ "$R_FREQ" != 0 ]; then write_node "$P_CUST" "$R_FREQ"; fi
+  # Publish a real kHz whenever we know one: index 0 with a stale cust_boost_freq is how
+  # the GPU stayed at the old cap while every index looked right.
+  _pub=$R_FREQ; [ -n "$_pub" ] && [ "$_pub" != 0 ] || _pub=""
+  if [ -z "$_pub" ]; then
+    case "$R_IDX" in 0) _pub=$(top_khz) ;; "$TOP_INDEX") _pub=$(bottom_khz) ;; esac
+  fi
+  if [ "$SYNC_PARAM" = 1 ] && [ -n "$_pub" ] && [ "$_pub" != 0 ]; then write_node "$P_CUST" "$_pub"; fi
   [ "$(node_val "$P_BOOST")" = 1 ] || write_node "$P_BOOST" 1
   return 0
 }
@@ -475,7 +515,11 @@ floor_to() {   # $1 = kHz; resolves the OPP then writes it (see write_floor)
     case "$_hz" in
       0) offline_top ;;
       *) if [ "$_hz" -le "$_low" ]; then
-           R_IDX=$TOP_INDEX; R_FREQ=$SLEEP_HZ
+           R_IDX=$TOP_INDEX; R_FREQ=$(bottom_khz)
+         elif [ "$_hz" = "$MIN_HZ" ] && [ -n "$SAFE_INDEX" ]; then
+           # MIN_HZ is the rest floor: its index is what SAFE_INDEX records, that is the
+           # whole point of the key. Resolving it again through offline_index cannot work.
+           R_IDX=$SAFE_INDEX; R_FREQ=$MIN_HZ
          elif [ -n "$L_MIN" ] && [ "$_hz" -le "$L_MIN" ]; then
            R_IDX=$TOP_INDEX; R_FREQ=$L_MIN
          else
@@ -492,6 +536,15 @@ status() {
   say "== gpufix status ($(grep -m1 '^version=' "$MODDIR/module.prop" 2>/dev/null | cut -d= -f2))"
   say "state: enabled=$ENABLED mode=$MODE min=$MIN_HZ top=$TOP_HZ load_on=${LOAD_ON}% hold=${HOLD_S}s every=${INTERVAL}s"
   say "root:  $(is_root && echo yes || echo 'no (read-only)')   config: $( [ -f "$CONF" ] && echo "$CONF" || echo defaults)"
+  _bt=$(cat /sys/class/power_supply/battery/temp 2>/dev/null)
+  case "$_bt" in
+    ''|*[!0-9]*) say "temp:  unreadable   limit=$((TEMP_MAX / 10)) C" ;;
+    *) if [ "$_bt" -ge "$TEMP_MAX" ]; then
+         say "temp:  $((_bt / 10)) C >= limit $((TEMP_MAX / 10)) C - THROTTLED to $(hz_text "$SLEEP_HZ") now"
+       else
+         say "temp:  $((_bt / 10)) C   limit=$((TEMP_MAX / 10)) C (nothing throttled below it)"
+       fi ;;
+  esac
   if [ "$MODE" = safer ]; then
     say "safer: idle=$(hz_text "$MIN_HZ") busy=$(hz_text "$TOP_HZ") sleep=$(hz_text "$SLEEP_HZ")"
     say "safer: screen=$(screen_on && echo on || echo off) screen_off_min=$SCREEN_OFF_MIN bat_min=${BAT_MIN}% cpu_on=${CPU_ON}% charging=$(charging && echo yes || echo no)"
@@ -528,6 +581,20 @@ status() {
     fi
   elif [ -n "$_ubi" ]; then
     say "ceil:  upper bound hal index $_ubi"
+  fi
+  # A right index with a stale kHz parameter is the bug that hid a 1100 MHz cap behind a
+  # correct 'hal index 0'. Say it out loud instead of leaving it to be spotted by eye.
+  _fni2=$(node_val "$N_BOOST"); _fkv=$(node_val "$P_CUST")
+  _want_f=$(case "$_fni2" in 0) top_khz ;; "$TOP_INDEX") bottom_khz ;; *) echo "" ;; esac)
+  if [ -n "$_want_f" ] && [ -n "$_fkv" ] && [ "$_fkv" != "$_want_f" ]; then
+    say "floor: hal index $_fni2 means $_want_f kHz, but cust_boost_freq reads $_fkv."
+    say "       Fix: preserve sync ('SYNC_PARAM=1') and re-run 'preset safer', or 'reapply'."
+  fi
+  _uki2=$(node_val "$N_UPBOUND"); _ukv=$(node_val "$P_UPBOUND")
+  _want_u=$(case "$_uki2" in 0) top_khz ;; "$TOP_INDEX") bottom_khz ;; *) echo "" ;; esac)
+  if [ -n "$_want_u" ] && [ -n "$_ukv" ] && [ "$_ukv" != "$_want_u" ]; then
+    say "ceil:  hal index $_uki2 means $_want_u kHz, but cust_upbound_freq reads $_ukv."
+    say "       That stale parameter is what caps the GPU. Fix: 'reapply'."
   fi
   if [ -n "$LADDER_OK" ] && [ "$LADDER_OK" = 0 ]; then
     say "mode:  OFFLINE - /proc/gpufreqv2 is not readable to this shell, so only top-OPP"
@@ -839,6 +906,70 @@ ceil() {   # $1 = kHz for the GED upper bound, 0 = the top OPP (default CEIL_HZ)
   say "undo:   $ME revert    (or reboot)"
 }
 
+reapply() {   # re-publish the current config to the nodes; no arguments, no guessing
+  # "I flashed the update - make it actually take effect." It heals values an older
+  # installer left behind, then writes BOTH the hal index and the matching kHz parameter,
+  # so a stale cust_upbound_freq / cust_boost_freq cannot survive.
+  is_root || { say "reapply needs root"; return 1; }
+  _rc=0
+  if [ "$MODE" = safer ]; then
+    [ -n "$SAFE_INDEX" ] || { SAFE_INDEX=$((TOP_INDEX > 0 ? TOP_INDEX - 1 : 0)); setkey "$CONF" SAFE_INDEX "$SAFE_INDEX"; }
+    # 1600000 spelled out is still "the top OPP"; normalise it so a denied ladder agrees.
+    case "$CEIL_HZ" in ''|*[!0-9]*) CEIL_HZ=0; setkey "$CONF" CEIL_HZ 0 ;; esac
+    [ "$CEIL_HZ" = "$(top_khz)" ] && { CEIL_HZ=0; setkey "$CONF" CEIL_HZ 0; }
+    [ "$MIN_HZ" = 390000 ] && { MIN_HZ=790000; setkey "$CONF" MIN_HZ 790000; }
+    [ "$CPU_ON" = 0 ] && { CPU_ON=60; setkey "$CONF" CPU_ON 60; }
+  fi
+  # Legacy 43 C throttle -> the 50 C limit this project ships. Value check, not a regex on
+  # a line: the config carries trailing comments, which is why the installer migrations
+  # never matched.
+  if [ "$TEMP_MAX" = 430 ]; then
+    TEMP_MAX=500
+    setkey "$CONF" TEMP_MAX 500
+    say "heal:   TEMP_MAX 430 -> 500 (the limit is 50 C, not 43 C)"
+  fi
+  say "config: MODE=$MODE min=$MIN_HZ top=$TOP_HZ sleep=$SLEEP_HZ ceil=$CEIL_HZ temp=$((TEMP_MAX / 10))C"
+  # 1. the ceiling - the one that silently capped the GPU at 1100 MHz
+  case "$CEIL_HZ" in
+    ''|*[!0-9]*) say "! CEIL_HZ is not a number ($CEIL_HZ)"; _rc=1 ;;
+    *) ceil_to "$CEIL_HZ"
+       case $? in
+         0|2) say "ceiling: hal index $(node_val "$N_UPBOUND") / $(node_val "$P_UPBOUND") kHz" ;;
+         *)   say "! could not publish the ceiling"; _rc=1 ;;
+       esac ;;
+  esac
+  # 2. the floor, at the end of the ladder this mode rests at
+  _frc=1
+  if [ "$MODE" = safer ] && ! ladder_available && [ -n "$SAFE_INDEX" ]; then
+    # MIN_HZ's index is SAFE_INDEX by definition; offline_index cannot derive it.
+    R_IDX=$SAFE_INDEX; R_FREQ=$MIN_HZ
+    write_floor
+    _frc=$?
+    _e=$MIN_HZ
+  else
+    case "$MODE" in
+      floor) _e=$TOP_HZ ;;
+      safer) _e=$MIN_HZ ;;
+      *)     _e=$SLEEP_HZ ;;
+    esac
+    floor_to "$_e"
+    _frc=$?
+  fi
+  case $_frc in
+    0|2) say "floor:   hal index $(node_val "$N_BOOST") / $(node_val "$P_CUST") kHz" ;;
+    *)   say "! could not publish the floor at $(hz_text "$_e")"; _rc=1 ;;
+  esac
+  # 3. wake the running loop so it does not undo any of this on its next tick
+  : > "$D/.gpufix.reload" 2>/dev/null
+  if [ -n "$CPU_ON" ] && [ "$CPU_ON" -gt 0 ]; then
+    say "cpu:     UI work (>${CPU_ON}%) raises the floor too"
+  else
+    say "cpu:     only GPU load raises the floor (CPU_ON=0)"
+  fi
+  [ "$_rc" = 0 ] && say "done. '$ME status' shows the live state."
+  return $_rc
+}
+
 release() {
   is_root || { say "release needs root"; return 1; }
   # "release" means the lowest OPP, and it has to work on a build where /proc is denied:
@@ -864,22 +995,36 @@ ceil_to() {   # publishes GED's upper bound: index on the hal node, kHz on the p
   [ -n "$CEIL_HZ" ] || { say "ceiling control disabled (CEIL_HZ empty)"; return 2; }
   _want=$1; _want=$(num_or "$_want" "")        # 0 stays 0: index 0 is the fastest OPP
   if ! ladder_available; then
+    _top=$(top_khz)
     case "$_want" in
-      0) R_IDX=0; R_FREQ=0 ;;
+      0) R_IDX=0; R_FREQ=$_top ;;
       '') say "! CEIL_HZ is not a number"; return 1 ;;
-      *)  say "! the ladder is unreadable here, so only a top OPP (CEIL_HZ=0) can be set"
-          return 1 ;;
+      # CEIL_HZ=1600000 is the top OPP written as a number: on a denied ladder that is
+      # still index 0, so accept it instead of refusing the very config we ship.
+      *) if [ -n "$_top" ] && [ "$_want" -ge "$_top" ]; then
+           R_IDX=0; R_FREQ=$_top
+         else
+           say "! the ladder is unreadable here, so only a top OPP (CEIL_HZ=0) can be set"
+           return 1
+         fi ;;
     esac
   else
     resolve_opp "$_want" || return 1
   fi
   _cur=$(node_val "$N_UPBOUND")
-  [ "$_cur" = "$R_IDX" ] && return 2      # the hal index is what GED enforces
+  # The index is necessary but NOT sufficient: if the kHz parameter disagrees we must fix
+  # it, otherwise GED keeps enforcing the old bound (seen: index 0, param 1100000).
+  _pk=$R_FREQ
+  { [ -n "$_pk" ] && [ "$_pk" != 0 ]; } || { case "$R_IDX" in 0) _pk=$(top_khz) ;; "$TOP_INDEX") _pk=$(bottom_khz) ;; *) _pk="" ;; esac; }
+  if [ "$_cur" = "$R_IDX" ] &&
+     { [ -z "$_pk" ] || [ "$(node_val "$P_UPBOUND")" = "$_pk" ]; }; then
+    return 2
+  fi
   snapshot
   write_node "$N_UPBOUND" "$R_IDX" || return 1
-  # Only publish a frequency we actually know; offline we do not, and writing 0 kHz there
-  # would just be noise in the reported value. The hal index is what GED enforces.
-  [ -n "$R_FREQ" ] && [ "$R_FREQ" != 0 ] && write_node "$P_UPBOUND" "$R_FREQ" 2>/dev/null
+  # Publish the kHz as well, from the configured end of the ladder if the live one is
+  # unknown: the hal index alone does not lift GED's real cap on this kernel.
+  [ -n "$_pk" ] && [ "$_pk" != 0 ] && write_node "$P_UPBOUND" "$_pk" 2>/dev/null
   return 0
 }
 
@@ -1072,6 +1217,7 @@ case "$1" in
   verify) sample "${2:-$SAMPLE_S}" verify ;;
   apply) apply "$2" ;;
   ceil) ceil "$2" ;;
+  reapply|fix|repair) reapply ;;
   preset) shift; preset "$1" ;;
   choose) choose_preset ;;
   release) release ;;
@@ -1079,5 +1225,5 @@ case "$1" in
   revert) revert ;;
   boot) boot ;;
   help|-h|--help) sed -n '/^# Modes:/,/^# Config:/p' "$0" | sed 's/^# \{0,1\}//;$d' ;;
-  *) say "usage: $ME [status|probe [s]|apply [hz]|ceil [hz|0]|release|preset safer|boost|max|stock|verify [s]|run|revert|boot]"; exit 2 ;;
+  *) say "usage: $ME [status|reapply|probe [s]|apply [hz]|ceil [hz|0]|release|preset safer|boost|max|stock|verify [s]|run|revert|boot]"; exit 2 ;;
 esac
