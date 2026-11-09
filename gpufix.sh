@@ -21,17 +21,17 @@
 # TOPPING OUT THE GPU FOR THE WHOLE SYSTEM:  TOP_HZ=0 means "the fastest OPP this
 # driver publishes" (index 0, 1600 MHz here). Combined with MODE=floor the floor never
 # leaves the top of the ladder, for every app and every screen state. Use the preset:
-#     gpufix.sh preset safer    # RECOMMENDED: 390 idle -> top OPP on load, screen-off = 390
+#     gpufix.sh preset safer    # RECOMMENDED: 790 rest -> 1600 on any UI work -> 390 asleep
 #     gpufix.sh preset boost    # 390 idle -> 1200 busy
 #     gpufix.sh preset max      # floor AND ceiling = top OPP always (pinned, hot, thirsty)
 #     gpufix.sh preset stock    # release everything (stock behaviour)
 #
-# THE SAFE ONE: MODE=safer keeps the lowest OPP while the screen is off AND while the GPU
-# is idle, raises it to TOP_HZ (0 = the top OPP) within INTERVAL s of real load so the
-# whole system - not just games - gets full clocks instantly, holds it for HOLD_S after the
-# last busy sample, then drops back. It releases instead of raising when the battery is at
-# or above TEMP_MAX (50 C) or below BAT_MIN (15%, not charging), so a hot or nearly-flat
-# phone never sits at the top OPP. Nothing is throttled below 50 C.
+# THE SAFE ONE: MODE=safer rests the floor at MIN_HZ (790 MHz for the safer preset), raises
+# it to TOP_HZ (1600) whenever the GPU *or the CPU* is busy - so scrolling, app switching
+# and video count, not just games - holds it for HOLD_S after the last busy sample, then
+# drops back. It releases to SLEEP_HZ (the lowest OPP) while the screen is off, and when
+# the battery is at or above TEMP_MAX (50 C) or below BAT_MIN (15%, not charging), so a
+# hot or nearly-flat phone never sits at the top OPP. Nothing is throttled below 50 C.
 # At or above TEMP_MAX battery temperature the floor drops to HOT_HZ (default MIN_HZ) until
 # the phone cools, so a hot game session cannot sit at the ceiling indefinitely.
 #
@@ -91,9 +91,12 @@ LADDER_OK=""        # "" = not probed yet, 1 = readable, 0 = denied to us (OFFLI
 # Defaults; /data/adb/fod/gpu.conf may override them (validated below).
 ENABLED=0            # 1 = start the governor at boot
 MODE=adaptive        # adaptive | safer (screen-aware) | floor (always TOP_HZ) | off (always MIN_HZ)
-MIN_HZ=390000        # floor while idle, and always while the screen is off in MODE=safer
-SCREEN_OFF_MIN=1     # MODE=safer: force the lowest OPP when the screen is off (1 = yes, 0 = no)
+MIN_HZ=390000        # floor while idle in use (MODE=safer default is 790000)
+SLEEP_HZ=390000      # floor while the screen is off, hot or low on battery (the lowest OPP)
+SCREEN_OFF_MIN=1     # MODE=safer: force SLEEP_HZ when the screen is off (1 = yes, 0 = no)
 BAT_MIN=15           # MODE=safer: below this battery % (and not charging) do not raise the floor
+CPU_ON=0             # MODE=safer: CPU busy %% that also counts as "the UI is working"; 0 = off
+SAFE_INDEX=          # ladder index of MIN_HZ, used only when the ladder is unreadable
 TOP_HZ=1200000       # floor while the GPU is busy
 LOAD_ON=60           # gpu_utilization load %, at or above this counts as busy
 HOLD_S=20            # keep TOP_HZ this long after the last busy sample
@@ -128,8 +131,12 @@ HOLD_S=$(num_or "$HOLD_S" 20)
 INTERVAL=$(num_or "$INTERVAL" 2)
 TEMP_MAX=$(num_or "$TEMP_MAX" 500)
 HOT_HZ=$(num_or "$HOT_HZ" 0)
+SLEEP_HZ=$(num_or "$SLEEP_HZ" 390000)
 SCREEN_OFF_MIN=$(num_or "$SCREEN_OFF_MIN" 1)
 BAT_MIN=$(num_or "$BAT_MIN" 15)
+CPU_ON=$(num_or "$CPU_ON" 0)
+[ "$CPU_ON" -le 100 ] || CPU_ON=100
+SAFE_INDEX=$(num_or "$SAFE_INDEX" "")
 TOP_INDEX=$(num_or "$TOP_INDEX" 44)
 CEIL_HZ=$(num_req "$CEIL_HZ" 1600000)    # 0 = top OPP; empty is not allowed for the ceiling
 SYNC_PARAM=$(num_or "$SYNC_PARAM" 1)
@@ -213,7 +220,7 @@ preset_values() {   # $1 preset -> "mode top_hz load_on hold_s interval ceil"; c
   # The ceiling is expressed as the ladder-agnostic 0 ("fastest OPP"), so a maxed preset
   # works even where /proc/gpufreqv2 is denied to us. "" leaves the ceiling alone.
   case "$1" in
-    safer) printf '%s\n' "safer 0 45 15 1 " ;;   # whole system on load, lowest OPP screen-off
+    safer) printf '%s\n' "safer 0 25 6 1 " ;;   # 790 rest floor (set by the preset), 1600 on any UI work, 390 asleep
     stock) printf '%s\n' "off 390000 60 0 2 " ;;
     boost) printf '%s\n' "adaptive 1200000 60 20 1 " ;;
     max)   printf '%s\n' "floor 0 60 20 1 0" ;;
@@ -255,6 +262,30 @@ charging() {   # 0 = external power is connected
   esac
   return 1
 }
+cpu_busy() {   # 0 = the system (not only the GPU) is doing work right now
+  # The UI itself is composited on the CPU: scrolling, app switching, dialogs and video
+  # all cost cores without ever loading the GPU enough for gpu_utilization to cross
+  # LOAD_ON. /proc/stat "idle" excludes iowait on Linux, so 100-idle measures real CPU
+  # occupancy; the window is the loop's own INTERVAL, so no extra state is kept.
+  [ "$CPU_ON" -gt 0 ] || return 1
+  # ONE variable: `read -r a b` would put the whole rest of the line into b, losing the
+  # counters. After `set --` the fields are: 1 cpu, 2 user, 3 nice, 4 system, 5 idle, ...
+  read -r _line 2>/dev/null < /proc/stat
+  set -- $_line
+  [ -n "${5:-}" ] || return 1
+  case "${5:-}" in *[!0-9]*) return 1 ;; esac
+  _t1=$(( ${2:-0} + ${3:-0} + ${4:-0} + ${5:-0} + ${6:-0} + ${7:-0} + ${8:-0} + ${9:-0} ))
+  _i1=${5:-0}
+  sleep "${CPU_SAMPLE_S:-1}"
+  read -r _line 2>/dev/null < /proc/stat
+  set -- $_line
+  case "${5:-}" in ''|*[!0-9]*) return 1 ;; esac
+  _t2=$(( ${2:-0} + ${3:-0} + ${4:-0} + ${5:-0} + ${6:-0} + ${7:-0} + ${8:-0} + ${9:-0} ))
+  _i2=${5:-0}
+  _dt=$(( _t2 - _t1 )); _di=$(( _i2 - _i1 ))
+  [ "$_dt" -gt 0 ] || return 1
+  [ $(( (_dt - _di) * 100 / _dt )) -ge "$CPU_ON" ]
+}
 low_battery() {   # 0 = too empty to raise the floor (and not charging)
   [ "$BAT_MIN" -gt 0 ] || return 1
   charging && return 1
@@ -263,15 +294,18 @@ low_battery() {   # 0 = too empty to raise the floor (and not charging)
   [ "$_c" -lt "$BAT_MIN" ]
 }
 floor_policy() {   # prints "want_hz reason" for MODE=safer, in order of precedence
-  # screen off -> lowest OPP; hot -> HOT_HZ; low battery -> release; else load-following.
-  # $1 = sticky 0/1, $2 = load %, $3 = screen_on 0/1, $4 = hot 0/1, $5 = low_batt 0/1
-  if [ "$SCREEN_OFF_MIN" = 1 ] && [ "$3" = 0 ]; then printf '%s screen-off\n' "$MIN_HZ"; return 0; fi
+  # screen off -> SLEEP_HZ (lowest OPP); hot -> HOT_HZ; low battery -> SLEEP_HZ;
+  # GPU busy or CPU busy -> TOP_HZ (1600, whole UI); else MIN_HZ (the 790 MHz floor).
+  # $1 = sticky 0/1, $2 = load %, $3 = screen_on 0/1, $4 = hot 0/1, $5 = low_batt 0/1,
+  # $6 = cpu_busy 0/1
+  if [ "$SCREEN_OFF_MIN" = 1 ] && [ "$3" = 0 ]; then printf '%s screen-off\n' "$SLEEP_HZ"; return 0; fi
   if [ "$4" = 1 ]; then
-    if [ "$HOT_HZ" -gt 0 ]; then printf '%s hot\n' "$HOT_HZ"; else printf '%s hot\n' "$MIN_HZ"; fi
+    if [ "$HOT_HZ" -gt 0 ]; then printf '%s hot\n' "$HOT_HZ"; else printf '%s hot\n' "$SLEEP_HZ"; fi
     return 0
   fi
-  if [ "$5" = 1 ]; then printf '%s low-battery\n' "$MIN_HZ"; return 0; fi
-  if [ "$1" = 1 ]; then printf '%s busy\n' "$TOP_HZ"; else printf '%s idle\n' "$MIN_HZ"; fi
+  if [ "$5" = 1 ]; then printf '%s low-battery\n' "$SLEEP_HZ"; return 0; fi
+  if [ "$1" = 1 ] || [ "${6:-0}" = 1 ]; then printf '%s busy\n' "$TOP_HZ"
+  else printf '%s idle\n' "$MIN_HZ"; fi
 }
 # --- end screen/charging helpers ---
 
@@ -305,7 +339,9 @@ plan_now() {   # prints "want_hz reason" for the current instant (MODE and heat 
            _st=0; [ "$_l" -ge "$LOAD_ON" ] && _st=1
            _sc=1; screen_on || _sc=0
            _lb=0; low_battery && _lb=1
-           floor_policy "$_st" "$_l" "$_sc" 0 "$_lb" ;;
+           _cb=0; [ -n "$CPU_SAMPLE_S" ] || CPU_SAMPLE_S=1
+           [ "$_sc" = 1 ] && { cpu_busy && _cb=1; }
+           floor_policy "$_st" "$_l" "$_sc" 0 "$_lb" "$_cb" ;;
     *)     _l=$(num_or "$(node_val "$N_UTIL")" 0)
            if [ "$_l" -ge "$LOAD_ON" ]; then printf '%s busy\n' "$TOP_HZ"
            else printf '%s idle\n' "$MIN_HZ"; fi ;;
@@ -448,7 +484,8 @@ status() {
   say "state: enabled=$ENABLED mode=$MODE min=$MIN_HZ top=$TOP_HZ load_on=${LOAD_ON}% hold=${HOLD_S}s every=${INTERVAL}s"
   say "root:  $(is_root && echo yes || echo 'no (read-only)')   config: $( [ -f "$CONF" ] && echo "$CONF" || echo defaults)"
   if [ "$MODE" = safer ]; then
-    say "safer: screen=$(screen_on && echo on || echo off) screen_off_min=$SCREEN_OFF_MIN bat_min=${BAT_MIN}% charging=$(charging && echo yes || echo no)"
+    say "safer: idle=$(hz_text "$MIN_HZ") busy=$(hz_text "$TOP_HZ") sleep=$(hz_text "$SLEEP_HZ")"
+    say "safer: screen=$(screen_on && echo on || echo off) screen_off_min=$SCREEN_OFF_MIN bat_min=${BAT_MIN}% cpu_on=${CPU_ON}% charging=$(charging && echo yes || echo no)"
   fi
   say "ged:   dvfs=$(cat "$P_DVFS" 2>/dev/null) boost_gpu_enable=$(cat "$P_BOOST" 2>/dev/null) bottom_freq=$(cat "$P_BOTTOM" 2>/dev/null) cust_boost_freq=$(cat "$P_CUST" 2>/dev/null) cust_upbound_freq=$(cat "$P_UPBOUND" 2>/dev/null)"
   say "live:  $(cat "$N_CUR" 2>/dev/null) | util(load block idle): $(cat "$N_UTIL" 2>/dev/null)"
@@ -502,9 +539,9 @@ status() {
       say "         OPP, GED will not go above it. Run 'preset max' to set it."
     fi
   elif [ "$MODE" = safer ]; then
-    say "verdict: MODE=safer - every app gets $(hz_text "$TOP_HZ") within ${INTERVAL}s of load and"
-    say "         keeps it for ${HOLD_S}s; otherwise the floor is $(hz_text "$MIN_HZ")."
-    say "         screen off -> $(hz_text "$MIN_HZ"); >= $((TEMP_MAX / 10)) C or below ${BAT_MIN}% -> released."
+    say "verdict: MODE=safer - the floor rests at $(hz_text "$MIN_HZ") and jumps to $(hz_text "$TOP_HZ")"
+    say "         for ${HOLD_S}s whenever the GPU *or* the CPU${CPU_ON:+ (>${CPU_ON}%)} is busy, so the whole UI benefits."
+    say "         screen off, >= $((TEMP_MAX / 10)) C or below ${BAT_MIN}% -> $(hz_text "$SLEEP_HZ")."
   else
     say "verdict: governor on - floor moves to $(hz_text "$TOP_HZ") while busy, back to $(hz_text "$MIN_HZ") when idle."
   fi
@@ -614,30 +651,41 @@ sample() {   # $1 seconds, $2 label; sets S_* and prints the numbers
 preset() {   # $1 = safer | boost | max | stock
   _vals=$(preset_values "$1") || {
     say "usage: $ME preset [safer|boost|max|stock]"
-    say "  safer  ALL apps get the top OPP on load; lowest OPP with the screen off (recommended)"
-    say "  boost  follow load: 390 idle -> 1200 busy (mild)"
-    say "  max    floor = ceiling = top OPP all the time (fastest, hottest, thirstiest)"
+    say "  safer  RECOMMENDED: floor 790 MHz, 1600 the moment the UI is busy (CPU or GPU),"
+    say "         390 with the screen off; nothing is throttled below 50 C"
+    say "  boost  follow GPU load: 390 idle -> 1200 busy (mild)"
+    say "  max    floor = ceiling = 1600 MHz all the time (hottest, thirstiest)"
     say "  stock  release the floor, stock behaviour"
     return 2
   }
   _name=$1
   set -- $_vals
   MODE=$1; TOP_HZ=$2; LOAD_ON=$3; HOLD_S=$4; INTERVAL=$5; _ceil=$6; ENABLED=1
+  if [ "$MODE" = safer ]; then
+    # A safer install carries its own idle floor (790 MHz) and its own sleep floor.
+    MIN_HZ=790000
+    SLEEP_HZ=390000
+  fi
   case "$MODE" in off) _want=$MIN_HZ ;; *) _want=$TOP_HZ ;; esac
-  # Resolve the floor BEFORE writing gpu.conf: a preset we cannot apply must leave the
-  # running config (and the governor that re-reads it) exactly as it was.
+  # Resolve what this preset will write BEFORE touching gpu.conf: a preset we cannot
+  # apply must leave the running config - and the governor re-reading it - alone.
   if is_root; then
     if ladder_available; then
       resolve_opp "$_want" || { say "! could not resolve $_want kHz on this ladder; nothing written."; return 1; }
       _lvl="$R_IDX ($R_FREQ kHz)"
+      if [ "$MODE" = safer ]; then
+        # now the idle end (790 MHz); this also becomes the offline fallback index
+        resolve_opp "$MIN_HZ" || { say "! could not resolve $MIN_HZ kHz; nothing written."; return 1; }
+        SAFE_INDEX=$R_IDX; _lvl="$R_IDX ($R_FREQ kHz)"
+      fi
     else
-      # Index 0 is the driver's name for the fastest OPP and TOP_INDEX is the slowest, so
-      # 'safer', 'max' and 'stock' still work where /proc/gpufreqv2 is denied. Only the
-      # in-between target of 'boost' needs the real ladder.
+      # Index 0 is the driver's name for the fastest OPP and TOP_INDEX the slowest, so
+      # safer/max/stock work where /proc/gpufreqv2 is denied. Only 'boost' needs the middle.
       case "$_name" in
         max)   R_IDX=0; R_FREQ=0; _lvl="0 (the top OPP)" ;;
-        stock|safer)
-               R_IDX=$TOP_INDEX; R_FREQ=$MIN_HZ; _lvl="$TOP_INDEX (the lowest OPP)" ;;
+        safer) R_IDX=$SAFE_INDEX; R_FREQ=$MIN_HZ
+               _lvl="$SAFE_INDEX (about $(hz_text "$MIN_HZ"); ladder unreadable)" ;;
+        stock) R_IDX=$TOP_INDEX; R_FREQ=$SLEEP_HZ; _lvl="$TOP_INDEX (the lowest OPP)" ;;
         *)     say "the OPP ladder is not readable here (denied to this shell context), and this"
                say "preset needs a frequency in the middle of the ladder. Nothing was written."
                say "On this build use 'safer', 'max' (top OPP) or 'stock' (lowest OPP)."
@@ -645,9 +693,6 @@ preset() {   # $1 = safer | boost | max | stock
       esac
     fi
   fi
-  # MODE=safer is a policy, not a fixed floor: apply the idle end now (the loop raises it
-  # on the next busy sample) so selecting it cannot leave the GPU pinned at the top.
-  [ "$MODE" = safer ] && { R_IDX=$TOP_INDEX; R_FREQ=$MIN_HZ; _lvl="$TOP_INDEX (the lowest OPP)"; }
   setkey "$CONF" ENABLED 1
   setkey "$CONF" MODE "$MODE"
   setkey "$CONF" TOP_HZ "$TOP_HZ"
@@ -656,8 +701,22 @@ preset() {   # $1 = safer | boost | max | stock
   setkey "$CONF" INTERVAL "$INTERVAL"
   [ -n "$_ceil" ] && setkey "$CONF" CEIL_HZ "$_ceil"
   case "$_name" in
-    safer) setkey "$CONF" SCREEN_OFF_MIN 1 ;;
-    stock) setkey "$CONF" SCREEN_OFF_MIN 0 ;;
+    safer) setkey "$CONF" MIN_HZ "$MIN_HZ"
+           setkey "$CONF" SLEEP_HZ "$SLEEP_HZ"
+           setkey "$CONF" SCREEN_OFF_MIN 1
+           setkey "$CONF" CPU_ON 60
+           # Unreadable ladder: the safest guess is one step above the slowest OPP, which
+           # is 790 MHz here (0 = 1600, 44 = 390). The real ladder overrides it above.
+           [ -n "$SAFE_INDEX" ] || SAFE_INDEX=$((TOP_INDEX > 0 ? TOP_INDEX - 1 : 0))
+           setkey "$CONF" SAFE_INDEX "$SAFE_INDEX" ;;
+    stock) setkey "$CONF" SCREEN_OFF_MIN 0
+           setkey "$CONF" MIN_HZ 390000; MIN_HZ=390000
+           setkey "$CONF" SLEEP_HZ 390000; SLEEP_HZ=390000 ;;
+    max|boost)
+           # Never inherit a safer install's 790 MHz rest floor: max means pinned, and the
+           # 50 C brake must go all the way down to the lowest OPP.
+           setkey "$CONF" MIN_HZ 390000; MIN_HZ=390000
+           setkey "$CONF" SLEEP_HZ 390000; SLEEP_HZ=390000 ;;
   esac
   : > "$D/.gpufix.reload"   # a running governor must pick this up before we touch the node
   both "preset $_name: MODE=$MODE TOP_HZ=$TOP_HZ LOAD_ON=$LOAD_ON HOLD_S=$HOLD_S INTERVAL=$INTERVAL"
@@ -667,15 +726,18 @@ preset() {   # $1 = safer | boost | max | stock
   fi
   if [ "$MODE" = floor ]; then
     say "note: floor = the top OPP. Battery drain rises; from $((TEMP_MAX / 10)) C"
-    say "      the floor drops to $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$MIN_HZ") kHz until it cools."
+    say "      the floor drops to $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$SLEEP_HZ") kHz until it cools."
   elif [ "$MODE" = safer ]; then
-    say "note: the moment any app loads the GPU, the floor moves to $(hz_text "$TOP_HZ") within"
-    say "      ${INTERVAL}s and stays there ${HOLD_S}s after the last busy sample. Screen off,"
-    say "      >= $((TEMP_MAX / 10)) C or below ${BAT_MIN}% -> $(hz_text "$MIN_HZ"). Ceiling: $(hz_text "$CEIL_HZ")."
+    say "note: rests at $(hz_text "$MIN_HZ") and jumps to $(hz_text "$TOP_HZ") the moment the GPU *or*"
+    say "      the CPU is busy - any app, any scrolling - keeping it ${HOLD_S}s after."
+    say "      Screen off, >= $((TEMP_MAX / 10)) C or below ${BAT_MIN}% -> $(hz_text "$SLEEP_HZ")."
+    say "      Ceiling: $(hz_text "$CEIL_HZ"). Nothing is throttled below $((TEMP_MAX / 10)) C."
   elif [ "$MODE" = off ] && [ -z "$_ceil" ]; then
     say "note: the floor is released; the GED upper bound is left where it is."
     say "      A reboot (or '$ME revert') restores the stock ceiling too."
   fi
+  # safer writes its idle floor now (never leaves the GPU pinned at the top); the loop
+  # raises it to TOP_HZ as soon as the UI is busy.
   write_floor
   case $? in
     0) both "floor now level $_lvl" ;;
@@ -806,12 +868,14 @@ run() {   # the adaptive loop
       case "$MODE" in adaptive|safer|floor|off) ;; *) MODE=adaptive ;; esac
       MIN_HZ=$(num_or "$MIN_HZ" 390000); TOP_HZ=$(num_or "$TOP_HZ" 1200000)
       SCREEN_OFF_MIN=$(num_or "$SCREEN_OFF_MIN" 1); BAT_MIN=$(num_or "$BAT_MIN" 15)
+      SLEEP_HZ=$(num_or "$SLEEP_HZ" 390000); CPU_ON=$(num_or "$CPU_ON" 0)
+      SAFE_INDEX=$(num_or "$SAFE_INDEX" "")
       LOAD_ON=$(num_or "$LOAD_ON" 60);   HOLD_S=$(num_or "$HOLD_S" 20)
       TEMP_MAX=$(num_or "$TEMP_MAX" 500); INTERVAL=$(num_or "$INTERVAL" 2)
       [ "$INTERVAL" -ge 1 ] || INTERVAL=1
       if [ "$(num_or "${ENABLED:-0}" 0)" != 1 ]; then
         log "run: ENABLED is no longer 1 -> releasing the floor and exiting"
-        resolve_opp "$MIN_HZ" && floor_to "$MIN_HZ"
+        resolve_opp "$SLEEP_HZ" && floor_to "$SLEEP_HZ"
         rm -f "$PIDF"; exit 0
       fi
     fi
@@ -820,15 +884,18 @@ run() {   # the adaptive loop
     read -r _idx _freq _rest 2>/dev/null < "$N_CUR"
     read -r _l _b _i 2>/dev/null < "$N_UTIL"
     LOAD=$(num_or "$_l" 0)
-    REASON=""; _hot_new=0; _scr=1; _lowb=0
+    REASON=""; _hot_new=0; _scr=1; _lowb=0; _cb=0
     if [ "$MODE" = safer ]; then
       screen_on || _scr=0
       low_battery && _lowb=1
+      # "whole UI, not only games": the CPU-side of the UI counts as load too, but only
+      # while the screen is on - a dark screen must never be kept awake by this.
+      [ "$_scr" = 1 ] && { cpu_busy && _cb=1; }
     fi
     if hot; then
       if [ "$_hot_logged" != 1 ]; then
         _hot_new=1; _hot_logged=1
-        log "run: battery at $(( $(cat /sys/class/power_supply/battery/temp 2>/dev/null) / 10 )) C (limit $((TEMP_MAX / 10)) C), floor -> $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$MIN_HZ") kHz"
+        log "run: battery at $(( $(cat /sys/class/power_supply/battery/temp 2>/dev/null) / 10 )) C (limit $((TEMP_MAX / 10)) C), floor -> $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$SLEEP_HZ") kHz"
       fi
       _res="0 $LAST"; REASON=hot
     else
@@ -836,17 +903,20 @@ run() {   # the adaptive loop
       case "$MODE" in
         off)   _res="0 $LAST"; REASON=off ;;
         floor) _res="1 $NW"; REASON=mode ;;
-        # safer: the screen being off is an instant release, not a held state
-        safer) [ "$_scr" = 0 ] && { _res="0 $NW"; } || _res=$(sticky_step "$ST" "$LOAD" "$NW" "$LAST" "$HOLD_S") ;;
+        # safer: the screen being off is an instant release, not a held state; a busy CPU
+        # requests the top OPP for exactly the tick it is busy, then HOLD_S keeps it there
+        safer) if [ "$_scr" = 0 ]; then _res="0 $NW"
+               elif [ "$_cb" = 1 ]; then _res="1 $NW"
+               else _res=$(sticky_step "$ST" "$LOAD" "$NW" "$LAST" "$HOLD_S"); fi ;;
         *)     _res=$(sticky_step "$ST" "$LOAD" "$NW" "$LAST" "$HOLD_S") ;;
       esac
     fi
     ST=${_res% *}; LAST=${_res#* }
     case "$ST" in 0|1) ;; *) ST=0 ;; esac
     if [ "$REASON" = hot ]; then
-      if [ "$HOT_HZ" -gt 0 ]; then WANT=$HOT_HZ; else WANT=$MIN_HZ; fi
+      if [ "$HOT_HZ" -gt 0 ]; then WANT=$HOT_HZ; else WANT=$SLEEP_HZ; fi
     elif [ "$MODE" = safer ]; then
-      _pol=$(floor_policy "$ST" "$LOAD" "$_scr" "$([ "$REASON" = hot ] && echo 1 || echo 0)" "$_lowb")
+      _pol=$(floor_policy "$ST" "$LOAD" "$_scr" "$([ "$REASON" = hot ] && echo 1 || echo 0)" "$_lowb" "$_cb")
       WANT=${_pol% *}; REASON=${_pol#* }
     else
       WANT=$(pick_target "$ST")
@@ -858,9 +928,13 @@ run() {   # the adaptive loop
       # Any release (idle, screen off, hot, low battery, mode=off) must land on the lowest
       # OPP by name: offline_index maps only 0/'' to the top, everything else needs the
       # ladder. v11.5 left MODE=safer/adaptive pinned at the top after load ended.
-      if [ "$WANT" = "$MIN_HZ" ] || [ "$REASON" = hot ] || [ "$REASON" = low-battery ] ||
-         [ "$REASON" = screen-off ] || [ "$REASON" = off ]; then
-        R_IDX=$TOP_INDEX; R_FREQ=$MIN_HZ
+      # NOTE: with MIN_HZ above the slowest OPP (MODE=safer's 790 MHz) MIN_HZ is NOT the
+      # lowest step any more - the brakes and the dark screen use SLEEP_HZ for that.
+      if [ "$REASON" = hot ] || [ "$REASON" = low-battery ] ||
+         [ "$REASON" = screen-off ] || [ "$REASON" = off ] || [ "$WANT" = "$SLEEP_HZ" ]; then
+        R_IDX=$TOP_INDEX; R_FREQ=$SLEEP_HZ
+      elif [ "$WANT" = "$MIN_HZ" ] && [ -n "$SAFE_INDEX" ]; then
+        R_IDX=$SAFE_INDEX; R_FREQ=$MIN_HZ
       elif offline_index "$WANT"; then : ; else R_IDX=""; fi
       if [ -n "$R_IDX" ] && { [ "$(node_val "$N_BOOST")" != "$R_IDX" ]; }; then
         if write_floor; then
@@ -884,7 +958,12 @@ run() {   # the adaptive loop
           screen-off*) log "run: screen off -> floor $(hz_text "$R_FREQ") (level $R_IDX)" ;;
           low-battery*) log "run: battery low -> floor $(hz_text "$R_FREQ") (level $R_IDX)" ;;
           mode*) log "run: mode=floor -> floor $(hz_text "$R_FREQ") (level $R_IDX)" ;;
-          1|busy*) log "run: load ${LOAD}% -> floor $(hz_text "$R_FREQ") (level $R_IDX), hold ${HOLD_S}s" ;;
+          busy*) if [ "$LOAD" -ge "$LOAD_ON" ]; then
+                   log "run: GPU load ${LOAD}% -> floor $(hz_text "$R_FREQ") (level $R_IDX), hold ${HOLD_S}s"
+                 else
+                   log "run: UI busy (CPU) -> floor $(hz_text "$R_FREQ") (level $R_IDX), hold ${HOLD_S}s"
+                 fi ;;
+          1) log "run: load ${LOAD}% -> floor $(hz_text "$R_FREQ") (level $R_IDX), hold ${HOLD_S}s" ;;
           *) log "run: idle ${LOAD}% -> floor $(hz_text "$R_FREQ") (level $R_IDX)" ;;
         esac
       elif [ $((_n % 60)) -eq 0 ]; then
