@@ -1,3 +1,7 @@
+DT2W removal
+* Removed double-tap-to-wake (dt2w.sh, /data/adb/fod/dt2w.conf, and dt2w.log) along with its service.sh launch, customize.sh config/disable hook, and diag.sh entries.
+* Screen-off FOD (fod_service.sh, sofod_touch.sh, sepolicy.rule, and the patched Goodix HAL/bridge) is unchanged.
+
 v11.2.2 (reliability fixes)
 * FOD HBM: watchdog timeouts are token-gated and cancelled/reaped before a new HBM session, so an old timer cannot turn off a newer fingerprint glow. MAX_S and the battery-temperature cutoff are unchanged.
 * FOD/SOFOD: fod_service.sh and sofod_touch.sh now use the shared single-instance guard; lib.sh ignores stale or unrelated PIDs. Removed the broad pkill from sofod_touch.sh. Reboot after an in-place update so pre-guard helpers stop.

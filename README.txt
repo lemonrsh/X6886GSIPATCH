@@ -5,12 +5,13 @@ This release removes the non-working screen-on-time (SOT) watcher completely.
 It does NOT calculate, reset, repair, or modify Android Settings battery history.
 It does NOT delete battery-usage-db files or change UsageStats permissions.
 The Android Settings SOT issue is separate and remains unresolved by this module.
+Double-tap-to-wake (dt2w.sh / dt2w.conf) has also been removed from this module;
+screen-off FOD (fod_service.sh / sofod_touch.sh) remains active.
 
 Preserved components (carried forward from v10.4):
 * X6886 Goodix fingerprint HAL patch / FOD bridge and HBM handling
 * Improved screen-off FOD touch replay: faster first retry, up to four verified attempts, input-node re-detection, and guaranteed touch release
 * Fixed 120 Hz refresh at all times (144 Hz and fingerprint switching removed)
-* DT2W and AOD/doze re-arming
 * SurfaceFlinger and background performance tweaks
 * Download Lag Fix
 * Messenger / Google Play services background handling
@@ -46,34 +47,9 @@ FOD tuning:
 * If FOD behaves incorrectly, remove/disable this module or restore v10.6.
 
 
-v11.0 AOD/DT2W update
----------------------
-* DT2W listener now watches mtk-tpd key-down codes 00c3, 00c6 and 00fb instead of only 00c6.
-* Touchscreen input node is found by device name, not a fixed event number.
-* Gesture switches are re-armed every ARM_S seconds (default 5), including during AOD/Doze.
-* Logs detected events and listener restarts to /data/adb/fod/dt2w.log.
-* This is a candidate-code implementation: getevent -lp reports supported codes, not which code your firmware emits for a double tap. After flashing, test AOD double-tap and inspect dt2w.log. If no gesture line is recorded, collect `su -c 'getevent -lt /dev/input/event4'` while double-tapping with AOD active so the exact vendor event can be mapped.
-* No PIN/password or biometric security bypass is included.
-
-
-v11.1 AOD/DT2W correction
--------------------------
-The supplied v11 log reported candidate key 00c3, but the accompanying raw
-getevent capture showed BTN_TOUCH and multitouch events without an EV_KEY
-gesture code. v11.1 therefore detects two BTN_TOUCH DOWN transitions 80-500 ms
-apart, while retaining support for native 00c3/00c6/00fb key events.
-It injects KEYCODE_WAKEUP and then invokes the non-toggle `cmd power wake-up`
-fallback. Events are logged to /data/adb/fod/dt2w.log.
-This is a software fallback based on the observed raw touch stream; it still
-requires the touchscreen driver to deliver touch events while AOD is active.
-No PIN/password or biometric security bypass is included.
-
-
-v11.2
------
-Stricter and lighter double-tap detection (position/movement/multi-touch checks, wake only when the screen is not
-already awake), event-driven FOD waits, adaptive download-lag fix, lighter refresh controller, cleanup. Full list in
-CHANGELOG.txt. New configs: /data/adb/fod/dt2w.conf and bg.conf. Collect logs with:
+v11.2+
+------
+Event-driven FOD waits (optional), adaptive download-lag fix, lighter refresh controller, and cleanup. Double-tap-to-wake (dt2w.sh / dt2w.conf) has been removed. Full history in CHANGELOG.txt. Config: /data/adb/fod/bg.conf. Collect logs with:
   su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh bundle'
 If you remove the module, Smooth Display may stay pinned at 120 Hz: run
   settings delete system min_refresh_rate; settings delete system peak_refresh_rate

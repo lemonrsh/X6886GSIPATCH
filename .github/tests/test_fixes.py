@@ -67,6 +67,20 @@ class GuardPlacementTests(unittest.TestCase):
         self.assertLess(fod.index("single_instance fod_service"), fod.index("sofod_touch.sh"))
 
 
+class Dt2wRemovalTests(unittest.TestCase):
+    def test_dt2w_is_removed(self):
+        self.assertFalse((REPO / "dt2w.sh").exists())
+        service = read("service.sh")
+        customize = read("customize.sh")
+        diag = read("diag.sh")
+        self.assertNotIn("dt2w.sh", service)
+        self.assertNotIn("dt2w_infinix_x6886", customize)
+        self.assertNotIn("cat > \"$DATA/fod/dt2w.conf\"", customize)
+        self.assertIn("rm -f \"$DATA/fod/dt2w.conf\"", customize)
+        self.assertNotIn("dt2w", diag)
+        self.assertIn("proc_gesture_function", read("sepolicy.rule"))
+
+
 class HbmSafetyTests(unittest.TestCase):
     def setUp(self):
         self.block = marked_block(

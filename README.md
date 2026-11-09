@@ -1,5 +1,5 @@
 # X6886GSIPATCH
-A magisk module FOD SOFOD double tap wake performance and many fixes on aosp gsi running on x6886
+A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
 ## v11.2.2 reliability fixes
 
