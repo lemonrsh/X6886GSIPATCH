@@ -1,6 +1,25 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v11.5 GPU presets that also work on locked-down /proc
+
+On some GSI/vendor combinations `/proc/gpufreqv2/*` is denied to the shell even as root,
+and GED's upper bound (`gpu_cust_upbound_freq`) can sit *below* the ladder top — both
+were true on the device that motivated this release (`custom_upbound_gpu_freq` capped the
+GPU at 1100000 kHz, so no floor could ever reach 1600).
+
+`preset max` now handles both cases: with no readable ladder it writes **index 0** (the
+driver's own name for the fastest OPP) to the floor *and* the ceiling nodes, and the
+thermal brake keeps working by dropping to `TOP_INDEX` (default 44 = slowest OPP) at
+`TEMP_MAX`. `status` prints the live upper bound and says outright when it is not the top
+OPP. `revert` restores both ceiling nodes.
+
+| config | default | meaning |
+| --- | --- | --- |
+| `CEIL_HZ` | `1600000` | GED upper bound to publish; `0` = fastest OPP |
+| `TOP_INDEX` | `44` | slowest OPP, used only when the ladder is unreadable |
+| `HOT_HZ` | `0` | floor while above `TEMP_MAX`; `0` = `MIN_HZ` |
+
 ## v11.4 GPU presets: max / boost / stock
 
 One command sets the whole policy:

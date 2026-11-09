@@ -1,6 +1,6 @@
 id=gpu_dvfs_x6886
 name=X6886 GPU DVFS governor
-version=v1.1.0
-versionCode=2
+version=v1.2.0
+versionCode=3
 author=lemonrsh
-description=GPU floor control for MT6789/GED. Presets: max (fastest OPP the whole time), boost (390 idle -> 1200 busy), stock. Reversible with one command or a reboot.
+description=GPU floor AND ceiling control for MT6789/GED. preset max pins both to the top OPP, works even when /proc/gpufreqv2 is unreadable; boost/stock follow load. Reversible with one command or a reboot.

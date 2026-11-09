@@ -389,6 +389,37 @@ STATUS={str(pathlib.Path(td) / 'missing')!r}
         self.assertIn("sticky_step", block)
         self.assertIn("pick_target", block)
 
+    def test_offline_index_rules(self):
+        # With /proc/gpufreqv2 denied (the phone's build), only index 0 / the slowest OPP
+        # can be named. Getting this wrong would move the floor to an unrelated step.
+        body = """
+L_MIN=390000; L_MAX=1600000; L_SLOW=44; LADDER_OK=0
+offline_top; echo "top:$R_IDX:$R_FREQ"
+offline_index 0 && echo "zero:$R_IDX:$R_FREQ"
+offline_index 1600000 && echo "max:$R_IDX:$R_FREQ"
+offline_index 390000 && echo "min:$R_IDX:$R_FREQ"
+if offline_index 900000; then echo "mid:resolved"; else echo "mid:refused"; fi
+"""
+        with tempfile.TemporaryDirectory() as td:
+            out = self.run_block(td, "", body)
+            self.assertEqual(out.split(), ["top:0:0", "zero:0:0", "max:0:0", "min:44:390000", "mid:refused"])
+
+    def test_ladder_available_is_cached(self):
+        with tempfile.TemporaryDirectory() as td:
+            table = pathlib.Path(td) / "table"
+            table.write_text("[0] freq = 1600000\n")
+            script = f"""
+LADDER_OK=""
+TABLES={str(table)!r}
+{self.block}
+if ladder_available; then echo readable; else echo denied; fi
+echo "cached=$LADDER_OK"
+"""
+            for shell in SHELLS:
+                result = run_shell(shell, script)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.split(), ["readable", "cached=1"])
+
     def test_ged_ladder_format_is_accepted(self):
         # The GED status dump is the fallback source when /proc/gpufreqv2 has nothing.
         ged = ("[GPU-OPP]       Index: 0, Freq: 1600000, Volt: 106250, Vsram: 110000\n"
@@ -423,7 +454,7 @@ set -eu
         return out[0]
 
     def test_preset_values(self):
-        self.assertEqual(self.run_block('preset_values max').split(), ["floor", "0", "60", "20", "1"])
+        self.assertEqual(self.run_block('preset_values max').split(), ["floor", "0", "60", "20", "1", "0"])
         self.assertEqual(self.run_block('preset_values boost').split(), ["adaptive", "1200000", "60", "20", "1"])
         self.assertEqual(self.run_block('preset_values stock').split(), ["off", "390000", "60", "0", "2"])
         self.assertEqual(self.run_block('if preset_values nope; then echo bad; else echo refused; fi').strip(), "refused")
