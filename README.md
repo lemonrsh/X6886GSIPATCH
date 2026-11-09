@@ -1,6 +1,37 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v11.3 load-following GPU governor (opt-in)
+
+On this device the GPU is not locked — `gpu_dvfs_enable=1` and
+`[GPU-LimitC] CeilingIndex: 0` — but GED's boost path is inert
+(`boost_gpu_enable=0`, `gpu_cust_boost_freq=390000` = the slowest OPP), so in practice
+the clock sits at 390 MHz unless GED itself sees sustained 3D work.
+
+`gpufix.sh` makes the floor follow load instead:
+
+| `gpu_utilization` load | floor requested |
+| --- | --- |
+| below `LOAD_ON` (60 %) and `HOLD_S` (20 s) elapsed | `MIN_HZ` 390 MHz (stock) |
+| at/above `LOAD_ON` | `TOP_HZ` 1200 MHz, held for `HOLD_S` after |
+| battery ≥ `TEMP_MAX` (43 °C) | released to `MIN_HZ` |
+
+Ceiling (1600 MHz) and `gpu_dvfs_enable` are never written, so the GPU still scales by
+demand inside the window and still idles at 390 MHz.
+
+```sh
+M=/data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh
+sh $M/gpufix.sh status          # state, live load, plan, verdict — writes nothing
+sh $M/gpufix.sh probe 20        # use the phone normally while it runs
+```
+
+Enable it in the main patch by setting `ENABLED=1` in `/data/adb/fod/gpu.conf`
+(`MODE=floor` for an always-raised floor, `MODE=off` to always release), or install the
+standalone **GPU-DVFS-X6886** module from the same release — same script, own state in
+`/data/adb/gpufix`, own uninstaller. Do not run both.
+
+`gpufix.sh revert` or a reboot restores the stock nodes.
+
 ## v11.2.2 reliability fixes
 
 - HBM watchdog timeouts are token-gated and cancelled/reaped before a newer

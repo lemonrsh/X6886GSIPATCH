@@ -1,3 +1,35 @@
+v11.3 (load-following GPU governor, opt-in)
+* New gpufix.sh: an adaptive GPU floor, not a static one. It samples GED's own load
+  counter (/sys/kernel/ged/hal/gpu_utilization) every INTERVAL s and moves the boost
+  floor: MIN_HZ (390 MHz, stock) while idle, TOP_HZ (1200 MHz) while load >= LOAD_ON %
+  and for HOLD_S afterwards. MODE=floor keeps it raised, MODE=off always releases.
+  The 1600 MHz ceiling and gpu_dvfs_enable are never touched, so the GPU still scales
+  by demand inside the window and still idles at 390 MHz - this is a floor, not a lock.
+* Why: gpu_dvfs_enable=1 and [GPU-LimitC] CeilingIndex=0 on this device mean nothing is
+  pinned, but boost_gpu_enable=0 with gpu_cust_boost_freq=390000 makes GED's boost path
+  a no-op, so the clock only leaves 390 MHz when GED itself sees sustained 3D work.
+* Commands: status (report + what the governor would do now), probe/verify (frequency
+  and load sampling with PASS/FAIL), apply [hz], release, run, revert.
+* `apply` resolves the requested frequency against the live OPP ladder
+  (/proc/gpufreqv2/gpu_working_opp_table, GED ladder as fallback) and writes the ladder
+  index to /sys/kernel/ged/hal/custom_boost_gpu_freq, syncing gpu_cust_boost_freq and
+  boost_gpu_enable=1. It refuses without root, without a readable ladder, at/above
+  TEMP_MAX, or when the target is not above the floor. The governor releases the floor
+  at TEMP_MAX and exits cleanly (releasing first) when ENABLED is set back to 0.
+* Snapshot (/data/adb/fod/gpu.orig) + revert; all written values are module parameters
+  or GED nodes, so a reboot also restores stock.
+* In the main patch it is OFF by default (ENABLED=0 in /data/adb/fod/gpu.conf);
+  service.sh starts `gpufix.sh boot`, which does nothing until you enable it.
+* New /gpumod: a standalone Magisk module (GPU-DVFS-X6886, id gpu_dvfs_x6886) that ships
+  the same gpufix.sh with the governor on, own state dir /data/adb/gpufix, own
+  uninstall.sh that restores the nodes. The release workflow publishes it as a second
+  asset (GPU-DVFS-X6886-<version>-<sha>.zip) and fails if the two gpufix.sh copies drift.
+* customize.sh creates /data/adb/fod/gpu.conf once and addkeys the new options;
+  diag.sh reports the GPU block and gpu.log.
+* Host-side tests: OPP ladder resolution (wrong index = wrong frequency), GED fallback
+  format, sticky/hold logic of the governor, refusal without a ladder, and that both
+  gpufix.sh copies stay identical.
+
 DT2W removal
 * Removed double-tap-to-wake (dt2w.sh, /data/adb/fod/dt2w.conf, and dt2w.log) along with its service.sh launch, customize.sh config/disable hook, and diag.sh entries.
 * Screen-off FOD (fod_service.sh, sofod_touch.sh, sepolicy.rule, and the patched Goodix HAL/bridge) is unchanged.

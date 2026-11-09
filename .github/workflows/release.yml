@@ -39,6 +39,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The standalone GPU module reuses the main gpufix.sh verbatim.
+          if ! cmp -s gpufix.sh gpumod/gpufix.sh; then
+            echo "::error::gpufix.sh and gpumod/gpufix.sh differ; run: cp gpufix.sh gpumod/gpufix.sh"
+            exit 1
+          fi
+
           for file in module.prop META-INF/com/google/android/update-binary \
                       META-INF/com/google/android/updater-script \
                       customize.sh post-fs-data.sh service.sh; do
@@ -80,6 +86,12 @@ jobs:
             printf 'tag=%s\n' "$TAG"
             printf 'zip_name=%s\n' "$ZIP_NAME"
             printf 'title=%s\n' "$TITLE"
+            gpu_version=$(awk -F= '$1 == "version" { print $2; exit }' gpumod/module.prop)
+            gpu_code=$(awk -F= '$1 == "versionCode" { print $2; exit }' gpumod/module.prop)
+            printf 'gpu_version=%s\n' "$gpu_version"
+            printf 'gpu_version_code=%s\n' "$gpu_code"
+            printf 'gpu_tag=v%s-%s\n' "${gpu_version#v}" "$SHORT_SHA"
+            printf 'gpu_zip_name=GPU-DVFS-X6886-v%s-%s.zip\n' "${gpu_version#v}" "$SHORT_SHA"
           } >> "$GITHUB_OUTPUT"
           echo "Preparing $TAG"
 
@@ -142,6 +154,54 @@ jobs:
           printf 'sha256=%s\n' "$SHA256" >> "$GITHUB_OUTPUT"
           ls -lh "$ZIP_PATH"
 
+      - name: Build standalone GPU module ZIP
+        id: gpupackage
+        shell: bash
+        env:
+          GPU_ZIP_NAME: ${{ steps.module.outputs.gpu_zip_name }}
+        run: |
+          set -euo pipefail
+          GPU_ZIP="$RUNNER_TEMP/$GPU_ZIP_NAME"
+          STAGE="$RUNNER_TEMP/gpumod"
+          rm -rf "$STAGE"; mkdir -p "$STAGE"
+
+          # Config-free module: manifest, installer, service, undo and the shared script.
+          cp gpumod/module.prop gpumod/customize.sh gpumod/service.sh \
+             gpumod/uninstall.sh gpumod/README.md "$STAGE"/
+          cp -r gpumod/META-INF "$STAGE"/
+          cp gpufix.sh "$STAGE"/
+          chmod 0755 "$STAGE"/*.sh "$STAGE/META-INF/com/google/android/update-binary"
+
+          ( cd "$STAGE" && zip -q -r "$GPU_ZIP" . )
+
+          python3 - "$GPU_ZIP" <<'PY'
+          import sys
+          import zipfile
+
+          required = {
+              "module.prop",
+              "META-INF/com/google/android/update-binary",
+              "META-INF/com/google/android/updater-script",
+              "customize.sh",
+              "service.sh",
+              "uninstall.sh",
+              "gpufix.sh",
+          }
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              names = archive.namelist()
+              missing = required.difference(names)
+              if missing:
+                  sys.exit(f"GPU ZIP missing entries: {sorted(missing)}")
+              if archive.testzip() is not None:
+                  sys.exit("GPU ZIP integrity check failed")
+              if not (archive.getinfo("META-INF/com/google/android/update-binary").external_attr >> 16) & 0o111:
+                  sys.exit("GPU update-binary is not executable")
+          print(f"Validated {len(names)} files in the GPU module ZIP")
+          PY
+
+          printf 'gpu_zip_path=%s\n' "$GPU_ZIP" >> "$GITHUB_OUTPUT"
+          printf 'gpu_sha256=%s\n' "$(sha256sum "$GPU_ZIP" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
       - name: Publish GitHub release
         shell: bash
         env:
@@ -152,6 +212,11 @@ jobs:
           ZIP_NAME: ${{ steps.module.outputs.zip_name }}
           ZIP_PATH: ${{ steps.package.outputs.zip_path }}
           SHA256: ${{ steps.package.outputs.sha256 }}
+          GPU_ZIP_NAME: ${{ steps.module.outputs.gpu_zip_name }}
+          GPU_ZIP_PATH: ${{ steps.gpupackage.outputs.gpu_zip_path }}
+          GPU_SHA256: ${{ steps.gpupackage.outputs.gpu_sha256 }}
+          GPU_VERSION: ${{ steps.module.outputs.gpu_version }}
+          GPU_VERSION_CODE: ${{ steps.module.outputs.gpu_version_code }}
         run: |
           set -euo pipefail
           NOTES="$RUNNER_TEMP/release-notes.md"
@@ -164,6 +229,20 @@ jobs:
           - ZIP SHA-256: \`$SHA256\`
 
           The installer still checks that the device has a supported Goodix HAL.
+
+          ### Optional: GPU DVFS governor, installed separately
+
+          **$GPU_ZIP_NAME** is a self-contained module (no FOD/GSI patch needed) that
+          makes the GPU follow load instead of sitting at 390 MHz: it raises the GED
+          boost floor to ~1200 MHz while \`gpu_utilization\` is >= 60 % and releases it
+          when idle. The 1600 MHz ceiling and \`gpu_dvfs_enable\` are never touched.
+          Undo with \`gpufix.sh revert\` or by removing the module/rebooting.
+
+          - Version: $GPU_VERSION (code $GPU_VERSION_CODE)
+          - ZIP SHA-256: \`$GPU_SHA256\`
+
+          Do not flash both modules at once: the main patch already contains
+          \`gpufix.sh\` (disabled by default). Pick one.
           EOF
 
           # A rerun for the same commit refreshes its existing release instead
@@ -174,10 +253,10 @@ jobs:
               echo "::error::$TAG already belongs to a different commit; refusing to overwrite it"
               exit 1
             fi
-            gh release upload "$TAG" "$ZIP_PATH" --clobber
+            gh release upload "$TAG" "$ZIP_PATH" "$GPU_ZIP_PATH" --clobber
             gh release edit "$TAG" --title "$TITLE" --notes-file "$NOTES"
           else
-            gh release create "$TAG" "$ZIP_PATH" \
+            gh release create "$TAG" "$ZIP_PATH" "$GPU_ZIP_PATH" \
               --target "$GITHUB_SHA" \
               --title "$TITLE" \
               --notes-file "$NOTES" \
@@ -185,5 +264,9 @@ jobs:
           fi
 
           URL="$(gh release view "$TAG" --json url --jq .url)"
-          printf '### Magisk module released\n\n[%s](%s)\n\nSHA-256: `%s`\n' "$ZIP_NAME" "$URL" "$SHA256" >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf '### Magisk modules released\n\n'
+            printf '[%s](%s)  \nSHA-256: `%s`\n\n' "$ZIP_NAME" "$URL" "$SHA256"
+            printf '[%s](%s)  \nSHA-256: `%s`\n' "$GPU_ZIP_NAME" "$URL" "$GPU_SHA256"
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "$URL"
