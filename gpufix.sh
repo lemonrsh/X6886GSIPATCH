@@ -16,8 +16,16 @@
 # This governor reads GED's own load counter (gpu_utilization) every INTERVAL s and
 # moves the boost floor: MIN_HZ while idle, TOP_HZ while busy and for HOLD_S after.
 # The ceiling stays 1600 MHz and DVFS stays on, so inside that window the clock still
-# scales by demand - it is a floor, not a fixed frequency. Flip MODE=floor for an
-# always-raised floor, MODE=off to always release.
+# scales by demand - it is a floor, not a fixed frequency.
+#
+# TOPPING OUT THE GPU FOR THE WHOLE SYSTEM:  TOP_HZ=0 means "the fastest OPP this
+# driver publishes" (index 0, 1600 MHz here). Combined with MODE=floor the floor never
+# leaves the top of the ladder, for every app and every screen state. Use the preset:
+#     gpufix.sh preset max      # floor = 1600 MHz always (pinned, max battery drain)
+#     gpufix.sh preset boost    # 390 idle -> 1200 busy (default)
+#     gpufix.sh preset stock    # release everything (stock behaviour)
+# Above TEMP_MAX battery temperature the floor drops to HOT_HZ (default MIN_HZ) until
+# the phone cools, so a hot game session cannot sit at the ceiling indefinitely.
 #
 # Two copies exist by design (the main patch ships it disabled, the standalone
 # GPU-DVFS-X6886 module ships it enabled with GPU_FIX/ENABLED=1); CI checks that this
@@ -32,6 +40,7 @@
 #   run               the adaptive loop (foreground; service.sh runs it in background)
 #   boot              what service.sh calls: start the loop when ENABLED=1
 #   revert            restore the values saved by the first write (a reboot does too)
+#   preset NAME       stock | boost | max - writes the config and applies at once
 #
 # Config: /data/adb/fod/gpu.conf   Snapshot: /data/adb/fod/gpu.orig   Log: /data/adb/fod/gpu.log
 # Nothing is written while ENABLED=0. Every value written is a module parameter or a GED
@@ -69,6 +78,7 @@ LOAD_ON=60           # gpu_utilization load %, at or above this counts as busy
 HOLD_S=20            # keep TOP_HZ this long after the last busy sample
 INTERVAL=2           # loop period in seconds
 TEMP_MAX=430         # at or above this battery temperature (deci-degC) release the floor
+HOT_HZ=0             # floor while too hot; 0 = use MIN_HZ (e.g. 900000 to stay warm-but-fast)
 SYNC_PARAM=1         # keep gpu_cust_boost_freq (module parameter) in sync with the floor
 SAMPLE_S=10          # default probe/verify window
 num_or() {   # $1 value, $2 fallback -> prints a sane non-negative integer
@@ -86,6 +96,7 @@ LOAD_ON=$(num_or "$LOAD_ON" 60)
 HOLD_S=$(num_or "$HOLD_S" 20)
 INTERVAL=$(num_or "$INTERVAL" 2)
 TEMP_MAX=$(num_or "$TEMP_MAX" 430)
+HOT_HZ=$(num_or "$HOT_HZ" 0)
 SYNC_PARAM=$(num_or "$SYNC_PARAM" 1)
 SAMPLE_S=$(num_or "$SAMPLE_S" 10)
 case "$MODE" in adaptive|floor|off) ;; *) MODE=adaptive ;; esac
@@ -95,7 +106,7 @@ case "$MODE" in adaptive|floor|off) ;; *) MODE=adaptive ;; esac
 log()  { echo "$(date +%F_%T) $*" >> "$LOG"; }
 say()  { printf '%s\n' "$*"; }
 both() { say "$*"; log "$*"; }
-node_val() { read -r _v _rest < "$1" 2>/dev/null; printf '%s' "$_v"; }
+node_val() { read -r _v _rest 2>/dev/null < "$1"; printf '%s' "$_v"; }
 
 # --- GPU OPP / node helpers (regression-tested by .github/tests/test_fixes.py) ---
 opp_lines() {   # print "index freq" for every published OPP: best source first
@@ -140,6 +151,25 @@ OPPEOF
 }
 # --- end GPU OPP / node helpers ---
 
+# --- preset helpers (regression-tested by .github/tests/test_fixes.py) ---
+preset_values() {   # $1 preset name -> "mode top_hz load_on hold_s interval" or empty
+  case "$1" in
+    stock) printf '%s\n' "off 390000 60 0 2" ;;
+    boost) printf '%s\n' "adaptive 1200000 60 20 1" ;;
+    max)   printf '%s\n' "floor 0 60 20 1" ;;
+    *) return 1 ;;
+  esac
+}
+setkey() {   # $1 file, $2 key, $3 value - replace in place or append; keeps other keys
+  [ -f "$1" ] || : > "$1"
+  if grep -q "^$2=" "$1" 2>/dev/null; then
+    sed "s|^$2=.*|$2=$3|" "$1" > "$1.tmp" 2>/dev/null && mv -f "$1.tmp" "$1"
+  else
+    printf '%s=%s\n' "$2" "$3" >> "$1"
+  fi
+}
+# --- end preset helpers ---
+
 # --- adaptive helpers (regression-tested by .github/tests/test_fixes.py) ---
 sticky_step() {   # $1 sticky 0/1, $2 load %, $3 now s, $4 last busy s, $5 hold s -> "sticky last_busy"
   case "$1$2$3$4$5" in *[!0-9]*) printf '%s %s\n' "${1:-0}" "${4:-0}"; return 0;; esac
@@ -157,7 +187,22 @@ pick_target() {   # $1 sticky 0/1 -> wanted floor in kHz
 # --- end adaptive helpers ---
 
 is_root() { [ "$(id -u 2>/dev/null)" = 0 ]; }
-now_s() { read -r _u _r < /proc/uptime 2>/dev/null; printf '%s' "${_u%%.*}"; }
+# --- plan helper (regression-tested by .github/tests/test_fixes.py) ---
+plan_now() {   # prints "want_hz reason" for the current instant (MODE and heat respected)
+  if hot; then
+    if [ "$HOT_HZ" -gt 0 ]; then printf '%s hot\n' "$HOT_HZ"; else printf '%s hot\n' "$MIN_HZ"; fi
+    return 0
+  fi
+  case "$MODE" in
+    off)   printf '%s released\n' "$MIN_HZ" ;;
+    floor) printf '%s floor\n' "$TOP_HZ" ;;
+    *)     _l=$(num_or "$(node_val "$N_UTIL")" 0)
+           if [ "$_l" -ge "$LOAD_ON" ]; then printf '%s busy\n' "$TOP_HZ"
+           else printf '%s idle\n' "$MIN_HZ"; fi ;;
+  esac
+}
+# --- end plan helper ---
+now_s() { read -r _u _r 2>/dev/null < /proc/uptime; printf '%s' "${_u%%.*}"; }
 hot() {   # 0 = too hot to raise the floor
   _t=$(cat /sys/class/power_supply/battery/temp 2>/dev/null)
   case "$_t" in ''|*[!0-9]*) return 1;; esac
@@ -182,6 +227,11 @@ snapshot() {   # keep the pre-change values once; never overwrite a real snapsho
     printf 'custom_boost_gpu_freq=%s\n' "$(node_val "$N_BOOST")"
   } > "$ORIG"
   log "snapshot $(tr '\n' ' ' < "$ORIG")"
+}
+floor_freq() {   # prints the kHz of the OPP currently written to custom_boost_gpu_freq
+  _fi=$(node_val "$N_BOOST")
+  [ -n "$_fi" ] || return 1
+  opp_lines | while read -r _i _f; do [ "$_i" = "$_fi" ] && { printf '%s\n' "$_f"; break; }; done
 }
 floor_to() {   # $1 = kHz; moves the GED boost floor (index) and optionally the parameter
   # exit codes: 0 = written, 2 = already there, 1 = failed
@@ -208,8 +258,14 @@ status() {
   _lvl_load=$(node_val "$N_UTIL")
   if ladder_stats; then
     say "opp:   $L_N levels, $L_MIN..$L_MAX kHz (slowest = index $L_SLOW)"
-    _tgt=$(pick_target "$(sticky_step 0 "${_lvl_load:-0}" "$(now_s)" 0 "$HOLD_S" | cut -d' ' -f1)")
-    resolve_opp "$_tgt" && say "plan:  load ${_lvl_load:-?}% would ask for level $R_IDX ($R_FREQ kHz)"
+    _pw=$(plan_now)
+    _pt=${_pw% *}; _pr=${_pw#* }
+    if resolve_opp "$_pt"; then
+      say "plan:  load ${_lvl_load:-?}% / mode $MODE / ${_pr} -> level $R_IDX ($R_FREQ kHz)"
+      [ "$R_FREQ" -ge "$L_MAX" ] && say "pin:   floor = ceiling = $R_FREQ kHz; the GPU cannot scale down on its own."
+    fi
+    _ff=$(floor_freq)
+    [ -n "$_ff" ] && say "asked: level $(node_val "$N_BOOST") = $_ff kHz (module floor)"
   else
     say "opp:   ladder not readable ($TABLES) - apply refused"
   fi
@@ -240,8 +296,8 @@ sample() {   # $1 seconds, $2 label; sets S_* and prints the numbers
   sleep 0.25 2>/dev/null || { _n=$_secs; _step=1; }
   S_MIN=""; S_MAX=""; S_LAST=""; S_LOADMAX=0; S_LOADSUM=0; S_LOADED=0; S_IDLEHI=0; S_CHANGES=0; _i=0
   while [ "$_i" -lt "$_n" ]; do
-    read -r _idx _freq _rest < "$N_CUR" 2>/dev/null
-    read -r _l _b _id < "$N_UTIL" 2>/dev/null
+    read -r _idx _freq _rest 2>/dev/null < "$N_CUR"
+    read -r _l _b _id 2>/dev/null < "$N_UTIL"
     case "$_freq" in ''|*[!0-9]*) _freq="";; esac
     _l=$(num_or "$_l" 0)
     if [ -n "$_freq" ]; then
@@ -263,7 +319,12 @@ sample() {   # $1 seconds, $2 label; sets S_* and prints the numbers
   say "== $2: ${_secs}s, $_n samples"
   say "freq:  min $S_MIN  max $S_MAX  last $S_LAST  changes $S_CHANGES kHz"
   say "load:  max ${S_LOADMAX}%  mean ${_mean}%  samples with load>0: $S_LOADED/$_n"
-  ladder_stats && say "floor: $L_MIN kHz (ladder index $L_SLOW), ceiling $L_MAX kHz"
+  FLOORF=""
+  if ladder_stats; then
+    say "floor: $L_MIN kHz (ladder index $L_SLOW), ceiling $L_MAX kHz"
+    FLOORF=$(floor_freq)
+    [ -n "$FLOORF" ] && say "asked: level $(node_val "$N_BOOST") = $FLOORF kHz (by this module)"
+  fi
   SCALE_OK=""
   if [ "$S_MAX" -eq 0 ]; then
     say "note:  GED nodes not readable - is this a MediaTek device with /sys/kernel/ged?"
@@ -271,10 +332,18 @@ sample() {   # $1 seconds, $2 label; sets S_* and prints the numbers
     SCALE_OK=1
     say "result: the GPU changed frequency $S_CHANGES times ($S_MIN..$S_MAX kHz) - scaling works."
     [ "$S_IDLEHI" -gt 0 ] && say "warn:  it sat above $S_MIN kHz in $S_IDLEHI unloaded samples; a floor may be held too long."
+  elif [ -n "$L_MAX" ] && [ "$S_LAST" -ge "$L_MAX" ]; then
+    SCALE_OK=1
+    say "result: held at the ceiling ($S_LAST kHz) - the floor is at the top OPP, nothing scales higher."
+  elif [ -n "$FLOORF" ] && [ -n "$L_MIN" ] && [ "$FLOORF" -gt "$L_MIN" ] && [ "$S_LAST" -le "$L_MIN" ]; then
+    SCALE_OK=0
+    say "result: the floor was asked to be $FLOORF kHz, yet the clock stayed at $S_LAST kHz."
+    say "        Something outside these nodes holds it (limiter, thermal or vendor power HAL)."
   elif [ -n "$L_MIN" ] && [ "$S_LAST" -le "$L_MIN" ]; then
     if [ "$S_LOADMAX" -ge 50 ]; then
       SCALE_OK=0
       say "result: flat at the $S_LAST kHz floor while load reached ${S_LOADMAX}% - no higher OPP was requested."
+      say "        Raise the floor: $ME preset boost (or max), then verify again."
     else
       say "result: flat at the $S_LAST kHz floor and the GPU was mostly idle - this window proves nothing."
       say "        Repeat inside a 3D game or benchmark."
@@ -296,6 +365,47 @@ sample() {   # $1 seconds, $2 label; sets S_* and prints the numbers
   log "sample/$2: ${_secs}s min=$S_MIN max=$S_MAX last=$S_LAST changes=$S_CHANGES loadmax=$S_LOADMAX verdict=${SCALE_OK:-unknown}"
 }
 
+preset() {   # $1 = stock | boost | max
+  _vals=$(preset_values "$1") || {
+    say "usage: $ME preset [stock|boost|max]"
+    say "  stock  release the floor, stock behaviour"
+    say "  boost  follow load: 390 idle -> 1200 busy (default)"
+    say "  max    floor at the fastest OPP (1600 MHz) all the time, whole system"
+    return 2
+  }
+  _name=$1
+  set -- $_vals
+  MODE=$1; TOP_HZ=$2; LOAD_ON=$3; HOLD_S=$4; INTERVAL=$5; ENABLED=1
+  setkey "$CONF" ENABLED 1
+  setkey "$CONF" MODE "$MODE"
+  setkey "$CONF" TOP_HZ "$TOP_HZ"
+  setkey "$CONF" LOAD_ON "$LOAD_ON"
+  setkey "$CONF" HOLD_S "$HOLD_S"
+  setkey "$CONF" INTERVAL "$INTERVAL"
+  : > "$D/.gpufix.reload"   # a running governor must pick this up before we touch the node
+  both "preset $_name: MODE=$MODE TOP_HZ=$TOP_HZ LOAD_ON=$LOAD_ON HOLD_S=$HOLD_S INTERVAL=$INTERVAL"
+  if ! ladder_stats; then
+    say "the OPP ladder is not readable right now; the preset is saved and applies when it is."
+    return 0
+  fi
+  case "$MODE" in off) _want=$MIN_HZ ;; *) _want=$TOP_HZ ;; esac
+  resolve_opp "$_want" || return 1
+  if [ "$MODE" = floor ] && [ "$R_FREQ" -ge "$L_MAX" ]; then
+    say "note: floor = ceiling = $R_FREQ kHz. Battery drain rises; above $TEMP_MAX deci-degC"
+    say "      the floor drops to $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$MIN_HZ") kHz until it cools."
+  fi
+  if ! is_root; then
+    say "saved. Needs root to change the nodes now; it applies at the next tick or boot."
+    return 0
+  fi
+  floor_to "$_want"
+  case $? in
+    0) both "floor now level $R_IDX ($R_FREQ kHz)" ;;
+    2) say "floor already level $R_IDX ($R_FREQ kHz)" ;;
+    *) say "! could not move the floor"; return 1 ;;
+  esac
+}
+
 apply() {   # $1 = Hz for the floor, default TOP_HZ
   _want=$(num_or "$1" "$TOP_HZ")
   is_root || { say "apply needs root (su -c '$ME apply')"; return 1; }
@@ -308,8 +418,9 @@ apply() {   # $1 = Hz for the floor, default TOP_HZ
     return 1
   fi
   resolve_opp "$_want" || { say "no OPP resolved for $_want kHz"; return 1; }
-  if [ "$R_FREQ" -le "$L_MIN" ]; then
-    say "$_want kHz resolves to the $L_MIN kHz floor - nothing to raise. Use a higher value."
+  if [ "$_want" -gt 0 ] && [ "$R_FREQ" -le "$L_MIN" ]; then
+    say "$_want kHz resolves to the $L_MIN kHz floor - nothing to raise. Use a higher value,"
+    say "or 0 for the fastest OPP ($L_MAX kHz)."
     return 1
   fi
   say "floor: level $R_IDX = $R_FREQ kHz (requested $_want, ladder $L_MIN..$L_MAX)"
@@ -368,10 +479,14 @@ run() {   # the adaptive loop
   is_root || { say "run needs root"; return 1; }
   [ -w "$N_BOOST" ] || { say "$N_BOOST is not writable; cannot govern the GPU."; return 1; }
   log "run: mode=$MODE min=$MIN_HZ top=$TOP_HZ load_on=$LOAD_ON hold=$HOLD_S interval=$INTERVAL temp_max=$TEMP_MAX"
-  ST=0; LAST=0; CUR_IDX=""; _n=0; _hot_logged=0; _last_floor=""
+  ST=0; LAST=0; _n=0; _hot_logged=0; _last_floor=""
   while :; do
-    if [ $((_n % 15)) -eq 0 ]; then   # re-read the config every ~15 ticks
+    # Re-read the config every ~15 ticks, or at once when `preset` asked for it -
+    # otherwise a running loop would keep its old MODE/TOP_HZ and undo the preset.
+    if [ $((_n % 15)) -eq 0 ] || [ -f "$D/.gpufix.reload" ]; then
+      rm -f "$D/.gpufix.reload"
       [ -f "$CONF" ] && . "$CONF"
+      ST=0; LAST=0   # a new MODE starts fresh; do not inherit a "busy" hold from the old one
       case "$MODE" in adaptive|floor|off) ;; *) MODE=adaptive ;; esac
       MIN_HZ=$(num_or "$MIN_HZ" 390000); TOP_HZ=$(num_or "$TOP_HZ" 1200000)
       LOAD_ON=$(num_or "$LOAD_ON" 60);   HOLD_S=$(num_or "$HOLD_S" 20)
@@ -385,36 +500,46 @@ run() {   # the adaptive loop
     fi
     _n=$((_n + 1))
     NW=$(now_s)
-    read -r _idx _freq _rest < "$N_CUR" 2>/dev/null
-    read -r _l _b _i < "$N_UTIL" 2>/dev/null
+    read -r _idx _freq _rest 2>/dev/null < "$N_CUR"
+    read -r _l _b _i 2>/dev/null < "$N_UTIL"
     LOAD=$(num_or "$_l" 0)
-    REASON=""
+    REASON=""; _hot_new=0
     if hot; then
-      [ "$_hot_logged" = 1 ] || { log "run: battery hot ($(cat /sys/class/power_supply/battery/temp 2>/dev/null) >= $TEMP_MAX), holding floor at $MIN_HZ"; _hot_logged=1; }
+      if [ "$_hot_logged" != 1 ]; then
+        _hot_new=1; _hot_logged=1
+        log "run: battery hot ($(cat /sys/class/power_supply/battery/temp 2>/dev/null) >= $TEMP_MAX), floor -> $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$MIN_HZ") kHz"
+      fi
       _res="0 $LAST"; REASON=hot
     else
       _hot_logged=0
       case "$MODE" in
-        off)   _res="0 $LAST" ;;
-        floor) _res="1 $NW" ;;
+        off)   _res="0 $LAST"; REASON=off ;;
+        floor) _res="1 $NW"; REASON=mode ;;
         *)     _res=$(sticky_step "$ST" "$LOAD" "$NW" "$LAST" "$HOLD_S") ;;
       esac
     fi
     ST=${_res% *}; LAST=${_res#* }
     case "$ST" in 0|1) ;; *) ST=0 ;; esac
-    WANT=$(pick_target "$ST")
-    if resolve_opp "$WANT" && [ "$R_IDX" != "$CUR_IDX" ]; then
+    if [ "$REASON" = hot ] && [ "$HOT_HZ" -gt 0 ]; then
+      WANT=$HOT_HZ
+    else
+      WANT=$(pick_target "$ST")
+    fi
+    # Always go through floor_to(): it re-reads the node, so a vendor power HAL that
+    # rewrites custom_boost_gpu_freq gets corrected on the next tick (exit 2 = no write).
+    if resolve_opp "$WANT"; then
       floor_to "$WANT"
-      case $? in
-        0)
-          CUR_IDX=$R_IDX
-          case "$REASON$ST" in
-            hot*) log "run: too hot -> floor $R_FREQ kHz (level $R_IDX)" ;;
-            1)    log "run: load ${LOAD}% -> floor $R_FREQ kHz (level $R_IDX), hold ${HOLD_S}s" ;;
-            *)    log "run: idle  ${LOAD}% -> floor $R_FREQ kHz (level $R_IDX)" ;;
-          esac ;;
-        2) CUR_IDX=$R_IDX ;;
-      esac
+      _rc=$?
+      if [ "$_rc" = 0 ]; then
+        case "$REASON$ST" in
+          hot*) [ "$_hot_new" = 1 ] || log "run: too hot -> floor $R_FREQ kHz (level $R_IDX)" ;;
+          mode*) log "run: mode=floor -> floor $R_FREQ kHz (level $R_IDX)" ;;
+          1) log "run: load ${LOAD}% -> floor $R_FREQ kHz (level $R_IDX), hold ${HOLD_S}s" ;;
+          *) log "run: idle ${LOAD}% -> floor $R_FREQ kHz (level $R_IDX)" ;;
+        esac
+      elif [ $((_n % 60)) -eq 0 ]; then
+        log "run: could not set level $R_IDX ($R_FREQ kHz); node reads $(node_val "$N_BOOST")"
+      fi
     fi
     sleep "$INTERVAL"
   done
@@ -446,10 +571,11 @@ case "$1" in
   probe) sample "${2:-$SAMPLE_S}" probe ;;
   verify) sample "${2:-$SAMPLE_S}" verify ;;
   apply) apply "$2" ;;
+  preset) shift; preset "$1" ;;
   release) release ;;
   run) run ;;
   revert) revert ;;
   boot) boot ;;
   help|-h|--help) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) say "usage: $ME [status|probe [s]|apply [hz]|release|verify [s]|run|revert|boot]"; exit 2 ;;
+  *) say "usage: $ME [status|probe [s]|apply [hz]|release|preset stock|boost|max|verify [s]|run|revert|boot]"; exit 2 ;;
 esac
