@@ -1,7 +1,32 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## v11.7 SAFER: 790 MHz rest, 1600 on any UI work, 390 asleep
+## v11.8 SAFER now really reaches 1600: the ceiling is lifted too
+
+**Bug (reported): "safer variant shows max 1100 MHz".** The floor asked for 1600 MHz but the
+GED **upper bound** was left at the stock `gpu_cust_upbound_freq=1100000` (hal index 9), and
+GED never runs above that bound. `safer` — like `boost` — only ever moved the floor, so the
+GPU stopped at exactly 1100 MHz.
+
+`safer` now publishes the ceiling as well (`CEIL_HZ=0` = the top OPP, the same value
+`preset max` uses), and the running loop keeps it enforced. Existing safer installs are
+healed on the next flash, and `status` now says it out loud when the ceiling is the thing
+holding the GPU back:
+
+```
+! the ceiling is CAPPING the GPU at 1100000 kHz (hal index 9).
+  The floor can ask for 1600 all it likes; GED will not go above this.
+  Fix: 'gpufix.sh preset safer' (lifts both), or 'gpufix.sh ceil 0'.
+```
+
+If you are already on the broken build, one command fixes it without reflashing:
+
+```sh
+su -c "sh /data/adb/modules/gpu_dvfs_x6886/gpufix.sh preset safer"
+su -c "sh /data/adb/modules/gpu_dvfs_x6886/gpufix.sh status"   # ceil: ... - the top OPP is allowed
+```
+
+### SAFER: 790 MHz rest, 1600 on any UI work, 390 asleep
 
 `safer` now runs a **three-step** policy and it is driven by the CPU as well as the GPU, so
 the whole UI benefits, not just games.
@@ -45,6 +70,7 @@ inherits the safer rest floor.
 | `MIN_HZ` | `790000` | safer rest floor while in use |
 | `SLEEP_HZ` | `390000` | floor for screen off / hot / low battery |
 | `TOP_HZ` | `0` | busy floor; `0` = the fastest OPP (1600 MHz) |
+| `CEIL_HZ` | `0` | GED upper bound published by safer/max; `0` = the top OPP. At the stock `1100000` the GPU cannot pass 1100 MHz |
 | `CPU_ON` | `60` | CPU busy % that also raises the floor (raise it towards 100 for GPU-only) |
 | `LOAD_ON` | `25` | GPU load % counted as busy (safer preset) |
 | `HOLD_S` | `6` | how long the top OPP is kept after the last busy sample |

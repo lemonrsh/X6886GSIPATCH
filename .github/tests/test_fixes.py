@@ -454,7 +454,10 @@ set -eu
         return out[0]
 
     def test_preset_values(self):
-        self.assertEqual(self.run_block('preset_values safer').split(), ["safer", "0", "25", "6", "1"])
+        # the 6th field is the ceiling: safer must lift GED's upper bound too (0 = top OPP),
+        # otherwise the stock 1100000 cap keeps the GPU at 1100 MHz whatever the floor says.
+        self.assertEqual(self.run_block('preset_values safer').split(), ["safer", "0", "25", "6", "1", "0"])
+        self.assertEqual(self.run_block('preset_values boost').split()[5:], [], "boost leaves the ceiling alone")
         self.assertEqual(self.run_block('preset_values max').split(), ["floor", "0", "60", "20", "1", "0"])
         self.assertEqual(self.run_block('preset_values boost').split(), ["adaptive", "1200000", "60", "20", "1"])
         self.assertEqual(self.run_block('preset_values stock').split(), ["off", "390000", "60", "0", "2"])
@@ -616,6 +619,20 @@ if cpu_busy; then echo busy; else echo quiet; fi
                     outs.append(r.stdout.strip())
                 self.assertEqual(outs[0], outs[1], "bash and dash disagree")
                 self.assertEqual(outs[0], name)
+
+    def test_safer_lifts_the_ged_upper_bound(self):
+        """Regression: 'safer' left the stock 1100000 ceiling in place, so the GPU never
+        passed 1100 MHz no matter what the floor asked for."""
+        src = read("gpufix.sh")
+        # the ceiling write must be reachable for MODE=safer, not only MODE=floor
+        match = re.search(r"if \[ \"\$MODE\" = floor \] \|\| \[ \"\$MODE\" = safer \]; then", src)
+        self.assertIsNotNone(match, "preset() only applies the ceiling for MODE=floor")
+        # and the loop must keep it enforced for safer even with an empty CEIL_HZ
+        self.assertEqual(
+            src.count('[ "$MODE" = safer ] && [ -z "$CEIL_HZ" ] && CEIL_HZ=0'),
+            2,
+            "both loop branches must default safer's ceiling to the top OPP",
+        )
 
     def test_volume_keys_map_to_the_two_profiles(self):
         block = marked_block(

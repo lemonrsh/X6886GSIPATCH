@@ -48,10 +48,16 @@ su -c "sh $M/gpufix.sh revert"        # undo the nodes (a reboot does too)
 
 | preset | mode | floor | ceiling | note |
 | --- | --- | --- | --- | --- |
-| `safer` | `safer` | **790 MHz rest, 1600 MHz on any GPU *or* CPU work, 390 screen-off** | unchanged | recommended: whole UI stays fast, nothing pinned |
+| `safer` | `safer` | **790 MHz rest, 1600 MHz on any GPU *or* CPU work, 390 screen-off** | top OPP (`CEIL_HZ=0`) | recommended: whole UI stays fast, nothing pinned |
 | `max` | `floor` | top OPP (`TOP_HZ=0`) | top OPP (`CEIL_HZ=0`) | floor == ceiling, GPU cannot idle down |
 | `boost` | `adaptive` | 1200 MHz while busy, 390 idle | unchanged | follows `gpu_utilization`, holds 20 s |
 | `stock` | `off` | 390 MHz | unchanged | nothing raised |
+
+**The ceiling is not optional.** GED will not run above `gpu_cust_upbound_freq`, and the
+stock value on this device is `1100000`. `safer` therefore publishes `CEIL_HZ=0` (the top
+OPP) just like `max`; without it the floor can ask for 1600 MHz and still top out at
+1100 MHz. `status` reports it: if the live upper bound is not the top OPP it says the
+ceiling is capping the GPU and tells you to run `preset safer` or `ceil 0`.
 
 If `/proc/gpufreqv2/*` is unreadable to the shell (some GSIs deny it even to root),
 `safer`, `max` and `stock` still work: they write index 0 (the driver's name for the

@@ -131,6 +131,11 @@ addkey "$DATA/fod/gpu.conf" BAT_MIN 15
 addkey "$DATA/fod/gpu.conf" SLEEP_HZ 390000
 addkey "$DATA/fod/gpu.conf" CPU_ON 60
 addkey "$DATA/fod/gpu.conf" SAFE_INDEX ""
+# v11.8: a safer install must also lift GED's upper bound, or the stock 1100 MHz cap wins.
+if [ "$(sed -n 's/^MODE=//p' "$DATA/fod/gpu.conf" 2>/dev/null | head -n 1)" = safer ]; then
+  if ! grep -q '^CEIL_HZ=' "$DATA/fod/gpu.conf"; then echo 'CEIL_HZ=0' >> "$DATA/fod/gpu.conf"
+  else sed -i 's/^CEIL_HZ=1600000$/CEIL_HZ=0/' "$DATA/fod/gpu.conf"; fi
+fi
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling
 addkey "$DATA/fod/dlfix.conf" ADAPTIVE 1

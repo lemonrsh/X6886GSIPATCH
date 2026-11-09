@@ -45,6 +45,9 @@ GPU (v11.7, optional): the installer asks with the volume keys -
   su -c 'sh .../gpufix.sh preset stock'  # release the floor
   Thermal (both): nothing is throttled below 50 C battery; at 50 C (TEMP_MAX=500) the
   floor drops to the lowest OPP (HOT_HZ=0) until it cools.
+  CEILING: safer also lifts GED's upper bound (CEIL_HZ=0 = top OPP). Without that the stock
+  1100000 cap keeps the GPU at 1100 MHz no matter what the floor asks for. If 'status'
+  reports 'the ceiling is CAPPING the GPU', re-run 'preset safer' or 'ceil 0'.
 "max" pins floor = ceiling = the top OPP (1600 MHz): maximum performance with the
 battery and heat cost that implies; above 43 C battery the floor drops to HOT_HZ (default
 stock) until the phone cools. It works even when /proc/gpufreqv2 is denied to the shell:
