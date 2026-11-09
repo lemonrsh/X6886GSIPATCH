@@ -1,3 +1,31 @@
+v11.6 (2026-11-09) - SAFER preset, volume-key profile choice, single 50 C limit
+* NEW MODE=safer + 'preset safer' (now the recommended one): the whole system - not just
+  games - gets the top OPP within one sample of real GPU load, holds it HOLD_S seconds
+  after the last busy sample, and releases to the lowest OPP. With the screen off it
+  always sits at the lowest OPP, because nothing on screen needs the GPU. It is never
+  pinned at 1600 MHz, so drain and heat stay close to normal.
+* Magisk installer asks for the profile with the volume keys: VOLUME UP = SAFER,
+  VOLUME DOWN = MAX, no press in 20 s = SAFER. The standalone GPU-DVFS-X6886 module
+  always applies the answer; the main patch only enables its governor when a key is
+  actually pressed, so an unattended flash changes nothing.
+* Thermal limit is now a single point: TEMP_MAX=500 (50 C battery). Nothing at all is
+  throttled below 50 C - 43 C and 49 C keep the full floor - and at/above 50 C the floor
+  drops to HOT_HZ (default = lowest OPP) until the phone cools. Existing configs with
+  TEMP_MAX=430 are migrated to 500 by the installer; the log and messages now print
+  degrees Celsius instead of deci-degC.
+* BAT_MIN=15 (safer): below 15% and not charging, the floor is not raised.
+* FIXED (found testing v11.5 on the device, ladder denied): 'preset stock' refused, so
+  there was no way out of 'preset max' except a reboot. 'safer'/'stock' now resolve to
+  TOP_INDEX (lowest OPP) offline, and the loop's releases go there too instead of leaving
+  MODE=adaptive pinned at the top after load ended.
+* FIXED: a preset that cannot be applied no longer rewrites gpu.conf first; presets
+  resolve the index before touching the config, so a refused preset leaves the running
+  governor's policy alone. write_floor() split out of floor_to() (resolve != write).
+* Screen detection: DRM dpms node -> dumpsys mWakefulness -> safe default "on" (never
+  guesses off, so a missing node cannot silently keep the GPU slow).
+* Tests: 36 host cases (bash + dash), incl. the safer precedence table, the 50 C
+  threshold (43/49 keep full, 50/52 throttle) and the volume-key mapping.
+
 v11.5 (GPU ceiling control + works on locked-down /proc)
 * WHY: on the reporter's GSI, /proc/gpufreqv2/* is denied to the shell even as root (the
   vendor power HAL keeps its own label). 'preset max' therefore saved its config and wrote

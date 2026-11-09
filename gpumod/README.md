@@ -23,37 +23,45 @@ The ceiling (`gpu_cust_upbound_freq` 1600 MHz) and `gpu_dvfs_enable` are never t
 so inside the window the GPU still scales by demand and still idles at 390 MHz.
 
 The governor samples `/sys/kernel/ged/hal/gpu_utilization` every `INTERVAL` s, raises the
-floor when load >= `LOAD_ON` %, and holds it for `HOLD_S` s. It drops back at
-`TEMP_MAX` battery temperature and refuses to run without a readable OPP ladder.
+floor when load >= `LOAD_ON` %, and holds it for `HOLD_S` s. In `MODE=safer` it also drops
+to the lowest OPP whenever the screen is off. It throttles only at/above `TEMP_MAX` (50 C
+battery) and works even where `/proc/gpufreqv2` is unreadable.
 
 ### Install / configure
 
-Flash the ZIP, reboot. Config lives in `/data/adb/gpufix/gpu.conf`.
+Flash the ZIP. During the flash the installer asks for a profile with the volume keys:
+**VOLUME UP = SAFER** (recommended), **VOLUME DOWN = MAX**, no press within 20 s = SAFER.
+An unattended flash therefore always lands on SAFER. Config lives in
+`/data/adb/gpufix/gpu.conf`.
 
 ```sh
 M=/data/adb/modules/gpu_dvfs_x6886
-su -c "sh $M/gpufix.sh preset max"    # fastest OPP always, whole system
-su -c "sh $M/gpufix.sh preset boost"  # 390 idle -> 1200 busy (default)
+su -c "sh $M/gpufix.sh preset safer"  # recommended: top OPP on load, lowest OPP screen-off
+su -c "sh $M/gpufix.sh preset max"    # fastest OPP always, whole system (pinned)
 su -c "sh $M/gpufix.sh preset stock"  # release the floor
 sh $M/gpufix.sh status                # state, live load, floor asked for, plan
 sh $M/gpufix.sh probe 20              # use the phone normally while it runs
 su -c "sh $M/gpufix.sh revert"        # undo the nodes (a reboot does too)
 ```
 
-| preset | floor | ceiling | note |
-| --- | --- | --- | --- |
-| `max` | top OPP (`TOP_HZ=0`, `MODE=floor`) | top OPP (`CEIL_HZ=0`) | floor == ceiling, GPU cannot idle down |
-| `boost` | 1200 MHz while busy, 390 idle | unchanged | follows `gpu_utilization`, holds 20 s |
-| `stock` | 390 MHz | unchanged | nothing raised |
+| preset | mode | floor | ceiling | note |
+| --- | --- | --- | --- | --- |
+| `safer` | `safer` | top OPP while busy, **lowest OPP when the screen is off** | unchanged | recommended: whole-system boost, no pinned floor |
+| `max` | `floor` | top OPP (`TOP_HZ=0`) | top OPP (`CEIL_HZ=0`) | floor == ceiling, GPU cannot idle down |
+| `boost` | `adaptive` | 1200 MHz while busy, 390 idle | unchanged | follows `gpu_utilization`, holds 20 s |
+| `stock` | `off` | 390 MHz | unchanged | nothing raised |
 
 If `/proc/gpufreqv2/*` is unreadable to the shell (some GSIs deny it even to root),
-`preset max` still works: it writes index 0 (the driver's name for the fastest OPP) to
-both nodes, and the thermal brake drops the floor to `TOP_INDEX` (default 44 = slowest
-OPP) at `TEMP_MAX`. `preset boost` needs the ladder and will refuse rather than guess.
+`safer`, `max` and `stock` still work: they write index 0 (the driver's name for the
+fastest OPP) or `TOP_INDEX` (default 44 = slowest OPP) to the GED nodes, and the thermal
+brake uses `TOP_INDEX` as well. Only `preset boost` needs the ladder, and it refuses
+instead of guessing.
 
-Above `TEMP_MAX` (43 C battery) the floor drops to `HOT_HZ` (default 0 = stock floor)
-until the phone cools; set `HOT_HZ=900000` to stay fast-but-safe instead. The loop
-re-reads the config every ~15 ticks, so edits apply without a restart.
+**Thermal limit: 50 C, and nothing below it.** `TEMP_MAX=500` is the only throttle point:
+below 50 C battery nothing is eased or throttled; at or above it the floor drops to
+`HOT_HZ` (default `0` = lowest OPP) until the phone cools. Set `HOT_HZ=900000` to stay
+fast-but-safe instead. The loop re-reads the config every ~15 ticks, so edits apply
+without a restart.
 
 Remove the module in Magisk to stop it; `uninstall.sh` also restores the nodes.
 

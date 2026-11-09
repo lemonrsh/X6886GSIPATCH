@@ -84,14 +84,16 @@ cat > "$DATA/fod/gpu.conf" <<'CONF'
 # Disabled here: the main patch only provides the tool. For the always-on
 # governor install the separate GPU-DVFS-X6886 module instead.
 ENABLED=0            # 1 = start the governor at boot (0 = never touch the GPU nodes)
-MODE=adaptive        # adaptive (load-following) | floor (always max) | off (always stock)
-MIN_HZ=390000        # floor while idle (stock floor)
-TOP_HZ=0             # floor used by mode=floor: 0 = the fastest OPP (1600 MHz), whole system
+MODE=safer           # safer (screen-aware) | adaptive | floor (always max) | off (always stock)
+MIN_HZ=390000        # floor while idle, and always while the screen is off
+SCREEN_OFF_MIN=1     # safer only: 1 = lowest OPP whenever the screen is off
+BAT_MIN=15           # safer only: below this battery % (not charging) do not raise the floor
+TOP_HZ=0             # floor used while busy: 0 = the fastest OPP (1600 MHz), whole system
 LOAD_ON=60           # mode=adaptive only: gpu_utilization load % counted as busy
 HOLD_S=20            # mode=adaptive only: keep the floor up this long after the last busy sample
 INTERVAL=1           # governor period in seconds
 HOT_HZ=0             # floor while above TEMP_MAX; 0 = MIN_HZ, e.g. 900000 to stay fast
-TEMP_MAX=430         # >= this battery temperature (deci-degC) lowers the floor
+TEMP_MAX=500         # ONLY at/above this temperature (deci-degC = 50 C) the floor drops
 CEIL_HZ=1600000      # GED upper bound published by the governor; 0 = the fastest OPP
 TOP_INDEX=44         # slowest OPP index, used only when /proc/gpufreqv2 is unreadable
 SYNC_PARAM=1         # keep gpu_cust_boost_freq in sync with the floor
@@ -107,7 +109,12 @@ addkey "$DATA/fod/gsi.conf" DEX_INSTALL_VERIFY 1
 addkey "$DATA/fod/gsi.conf" FAST_FIRST_BOOT 1
 addkey "$DATA/fod/gsi.conf" BOOT_THREADS 0
 addkey "$DATA/fod/gpu.conf" SYNC_PARAM 1
-addkey "$DATA/fod/gpu.conf" TEMP_MAX 430
+# v11.6: the throttle is a single limit at 50 C; nothing is throttled below it.
+if grep -q '^TEMP_MAX=430$' "$DATA/fod/gpu.conf" 2>/dev/null; then
+  sed -i 's/^TEMP_MAX=430$/TEMP_MAX=500/' "$DATA/fod/gpu.conf"
+  ui_print "- gpu.conf: TEMP_MAX 430 -> 500 (throttle only at 50 C)"
+fi
+addkey "$DATA/fod/gpu.conf" TEMP_MAX 500
 addkey "$DATA/fod/gpu.conf" SAMPLE_S 10
 addkey "$DATA/fod/gpu.conf" MIN_HZ 390000
 addkey "$DATA/fod/gpu.conf" LOAD_ON 60
@@ -116,6 +123,8 @@ addkey "$DATA/fod/gpu.conf" HOT_HZ 0
 addkey "$DATA/fod/gpu.conf" CEIL_HZ 1600000
 addkey "$DATA/fod/gpu.conf" TOP_INDEX 44
 addkey "$DATA/fod/gpu.conf" TOP_HZ 0
+addkey "$DATA/fod/gpu.conf" SCREEN_OFF_MIN 1
+addkey "$DATA/fod/gpu.conf" BAT_MIN 15
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling
 addkey "$DATA/fod/dlfix.conf" ADAPTIVE 1
@@ -141,7 +150,22 @@ ui_print "- v10.5: SOT watcher removed; Settings battery history/database are un
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log sofod_touch.log gsi.log"
 ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
-ui_print "- v11.4: GPU governor is opt-in: set ENABLED=1 in gpu.conf, or install GPU-DVFS-X6886."
-ui_print "  Max performance always: su -c 'sh \$MODPATH/gpufix.sh preset max' after boot."
+# v11.6: the GPU governor is optional here, but the choice is one volume press away.
+# Any key press enables it with that profile; the 20 s timeout keeps a dirty flash
+# governor-free, so an unattended install never changes GPU behaviour behind your back.
+ui_print " "
+ui_print "- GPU governor (optional): VOLUME UP = SAFER, VOLUME DOWN = MAX, else skip (20 s)."
+ui_print "  SAFER: the whole system gets the top OPP when the GPU is busy and releases to"
+ui_print "  the lowest OPP with the screen off. MAX: pinned at the top OPP always."
+GPUFIX_CHOICE=$MODPATH/.choice sh "$MODPATH/gpufix.sh" choose >&2
+_CH=$(cat "$MODPATH/.choice" 2>/dev/null)
+rm -f "$MODPATH/.choice"
+case "$_CH" in
+  safer|max) sh "$MODPATH/gpufix.sh" preset "$_CH" >&2 || true
+             ui_print "  -> enabled with preset $_CH"
+             ui_print "  Change it later: su -c 'sh /data/adb/modules/X6886*/gpufix.sh preset safer|max'" ;;
+  *)         ui_print "  -> skipped. Enable later: su -c 'sh /data/adb/modules/X6886*/gpufix.sh preset safer'"
+             ui_print "     (or install the separate GPU-DVFS-X6886 module)" ;;
+esac
 ui_print "- v11.2: see CHANGELOG.txt. Config: bg.conf. (DT2W removed)"
 ui_print "- Reboot to apply."

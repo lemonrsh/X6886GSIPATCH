@@ -35,10 +35,14 @@ Diagnostics: run
   su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh'
 The diagnostic script intentionally does not inspect or alter Settings SOT data.
 
-GPU (v11.5, optional): gpufix.sh controls the GPU floor AND ceiling. Three presets:
-  su -c 'sh .../gpufix.sh preset max'    # fastest OPP (1600 MHz) always, whole system
-  su -c 'sh .../gpufix.sh preset boost'  # 390 MHz idle -> 1200 MHz while busy (default)
+GPU (v11.6, optional): the installer asks with the volume keys -
+  VOLUME UP = SAFER (recommended), VOLUME DOWN = MAX, no press = skip/default.
+  Both boost the whole system, not just games; they differ when the GPU is idle:
+  su -c 'sh .../gpufix.sh preset safer'  # top OPP on load, LOWEST OPP when the screen is off
+  su -c 'sh .../gpufix.sh preset max'    # fastest OPP (1600 MHz) always, pinned
   su -c 'sh .../gpufix.sh preset stock'  # release the floor
+  Thermal: nothing is throttled below 50 C battery; at 50 C (TEMP_MAX=500) the floor
+  drops to HOT_HZ (default = lowest OPP) until it cools.
 "max" pins floor = ceiling = the top OPP (1600 MHz): maximum performance with the
 battery and heat cost that implies; above 43 C battery the floor drops to HOT_HZ (default
 stock) until the phone cools. It works even when /proc/gpufreqv2 is denied to the shell:
