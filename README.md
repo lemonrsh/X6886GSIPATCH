@@ -1,6 +1,65 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v11.6 SAFER preset + volume-key profile choice
+
+Two profiles, both of which boost the GPU for the **whole system** (not just games). The
+installer asks for one with the volume keys:
+
+```
+VOLUME UP    SAFER   recommended
+VOLUME DOWN  MAX     pinned at the top OPP, always
+no press     SAFER   (an unattended flash never changes GPU behaviour)
+```
+
+Both flavours are also one command away at any time:
+
+```sh
+M=/data/adb/modules/gpu_dvfs_x6886       # or .../X6886_GSI_PATCH_level_1_by_lemonrsh
+su -c "sh $M/gpufix.sh preset safer"     # recommended: whole-system boost, releases when idle
+su -c "sh $M/gpufix.sh preset max"       # pinned: floor = ceiling = 1600 MHz, always
+su -c "sh $M/gpufix.sh preset stock"     # let go of everything (stock behaviour)
+```
+
+| | `safer` | `max` |
+| --- | --- | --- |
+| while the GPU is busy (any app) | **top OPP** (1600 MHz) within 1 s | top OPP, always |
+| while the GPU is idle | lowest OPP (390 MHz) | top OPP |
+| screen off | **lowest OPP, always** | top OPP |
+| battery at/above `TEMP_MAX` | lowest OPP until it cools | lowest OPP until it cools |
+| battery below `BAT_MIN` and not charging | lowest OPP | (same) |
+| heat / drain | normal | high, sustained |
+
+`safer` (`MODE=safer`) is the middle ground you asked for: it is never pinned at 1600 MHz
+and never parked at 390 MHz while something needs the GPU — it jumps to the top OPP within
+one sample of real load, holds `HOLD_S` seconds after the last busy sample, and drops back.
+With the screen off it always sits at the **lowest** OPP, because nothing on screen needs
+the GPU.
+
+### Thermal limit: nothing below 50 °C
+
+`TEMP_MAX=500` (deci-degC = **50 °C** battery) is the only throttle point. Below it nothing
+is throttled — 43 °C, 49 °C, no easing, no half measures. At or above 50 °C the floor drops
+to `HOT_HZ` (default `0` = `MIN_HZ`, the lowest OPP) and stays there until the phone cools.
+Installs that still carry the old `TEMP_MAX=430` are migrated to 500 by the installer;
+you can change it in `gpu.conf` at any time.
+
+| config | default | meaning |
+| --- | --- | --- |
+| `MODE` | `safer` | `safer` \| `adaptive` \| `floor` \| `off` |
+| `TEMP_MAX` | `500` | the only throttle point: 50 °C battery |
+| `HOT_HZ` | `0` | floor at/above `TEMP_MAX`; `0` = `MIN_HZ` |
+| `SCREEN_OFF_MIN` | `1` | `safer`: lowest OPP whenever the screen is off |
+| `BAT_MIN` | `15` | `safer`: below this % (not charging) do not raise the floor |
+| `CEIL_HZ` | `1600000` | GED upper bound to publish; `0` = fastest OPP |
+| `TOP_INDEX` | `44` | slowest OPP, used only when the ladder is unreadable |
+
+`status` shows `screen=on/off`, `screen_off_min`, `bat_min` and `charging` while `safer` is
+active, and `safer` / `max` / `stock` all work even where `/proc/gpufreqv2` is unreadable
+(`boost` is the only one that needs the ladder, and it refuses instead of guessing).
+
+## v11.5 GPU presets that also work on locked-down /proc
+
 ## v11.5 GPU presets that also work on locked-down /proc
 
 On some GSI/vendor combinations `/proc/gpufreqv2/*` is denied to the shell even as root,
@@ -39,8 +98,8 @@ su -c "sh $M/gpufix.sh preset stock"     # release the floor, stock behaviour
 
 `preset` rewrites `/data/adb/fod/gpu.conf` (or `/data/adb/gpufix/gpu.conf` for the
 standalone module) keeping your other keys and comments, and applies the floor
-immediately when run as root. Above `TEMP_MAX` battery temperature the floor drops to
-`HOT_HZ` (default 0 = stock floor) until the phone cools.
+immediately when run as root. At or above `TEMP_MAX` (now 50 °C) the floor drops to
+`HOT_HZ` (default 0 = stock floor) until the phone cools. Nothing below 50 °C throttles.
 
 **`max` means pinned.** Floor == ceiling == 1600 MHz, so the GPU has no lower step to
 fall back to. That is the "maximum always, whole system" behaviour, with the battery
@@ -75,7 +134,7 @@ the clock sits at 390 MHz unless GED itself sees sustained 3D work.
 | --- | --- |
 | below `LOAD_ON` (60 %) and `HOLD_S` (20 s) elapsed | `MIN_HZ` 390 MHz (stock) |
 | at/above `LOAD_ON` | `TOP_HZ` 1200 MHz, held for `HOLD_S` after |
-| battery ≥ `TEMP_MAX` (43 °C) | released to `MIN_HZ` |
+| battery ≥ `TEMP_MAX` (50 °C) | released to `MIN_HZ` |
 
 Ceiling (1600 MHz) and `gpu_dvfs_enable` are never written, so the GPU still scales by
 demand inside the window and still idles at 390 MHz.

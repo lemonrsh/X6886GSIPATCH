@@ -454,6 +454,7 @@ set -eu
         return out[0]
 
     def test_preset_values(self):
+        self.assertEqual(self.run_block('preset_values safer').split(), ["safer", "0", "45", "15", "1"])
         self.assertEqual(self.run_block('preset_values max').split(), ["floor", "0", "60", "20", "1", "0"])
         self.assertEqual(self.run_block('preset_values boost').split(), ["adaptive", "1200000", "60", "20", "1"])
         self.assertEqual(self.run_block('preset_values stock').split(), ["off", "390000", "60", "0", "2"])
@@ -519,6 +520,117 @@ plan_now
         self.assertEqual(self.plan("floor", 0, hot=1), "390000 hot")
         # an explicit HOT_HZ keeps a warm-but-fast floor instead of the stock one
         self.assertEqual(self.plan("floor", 0, hot=1, hot_hz=900000), "900000 hot")
+
+
+class GpuSaferModeTests(unittest.TestCase):
+    """MODE=safer: whole-system boost on load, but never a pinned floor.
+
+    Precedence is pinned here because getting it wrong is exactly the bug the user
+    reported twice: (1) a floor left at the top OPP after load ends, (2) a top OPP floor
+    while the screen is off.
+    """
+
+    def block(self):
+        return marked_block(
+            read("gpufix.sh"),
+            "# --- screen/charging helpers (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end screen/charging helpers ---",
+        )
+
+    def policy(self, sticky, screen, hot=0, lowb=0, min_hz=390000, top_hz=0,
+               hot_hz=0, screen_off_min=1):
+        script = f"""
+set -eu
+MIN_HZ={min_hz}; TOP_HZ={top_hz}; HOT_HZ={hot_hz}
+SCREEN_OFF_MIN={screen_off_min}; BAT_MIN=15
+{self.block()}
+floor_policy {sticky} 0 {screen} {hot} {lowb}
+"""
+        out = []
+        for shell in SHELLS:
+            result = run_shell(shell, script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out.append(result.stdout.strip())
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
+        return out[0]
+
+    def test_screen_off_always_drops_to_the_lowest_opp(self):
+        # Even under full load, a dark screen means the lowest OPP.
+        self.assertEqual(self.policy(1, 0), "390000 screen-off")
+        self.assertEqual(self.policy(1, 0, top_hz=1600000), "390000 screen-off")
+
+    def test_busy_and_idle_on_screen(self):
+        self.assertEqual(self.policy(1, 1), "0 busy")
+        self.assertEqual(self.policy(0, 1), "390000 idle")
+        self.assertEqual(self.policy(1, 1, top_hz=1200000), "1200000 busy")
+
+    def test_hot_and_low_battery_release_before_load(self):
+        self.assertEqual(self.policy(1, 1, hot=1), "390000 hot")
+        self.assertEqual(self.policy(1, 1, hot=1, hot_hz=900000), "900000 hot")
+        self.assertEqual(self.policy(1, 1, lowb=1), "390000 low-battery")
+
+    def test_screen_off_wins_over_hot(self):
+        self.assertEqual(self.policy(1, 0, hot=1), "390000 screen-off")
+
+    def test_nothing_is_throttled_below_fifty_celsius(self):
+        """43 C and 49 C keep the full floor; only >= 50 C throttles."""
+        block = marked_block(
+            read("gpufix.sh"),
+            "# --- thermal limit helper (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end thermal limit helper ---",
+        )
+        results = []
+        for temp in (300, 380, 430, 490, 499, 500, 520):
+            with tempfile.TemporaryDirectory() as td:
+                tp = pathlib.Path(td) / "temp"
+                tp.write_text(f"{temp}\n")
+                script = f"""
+TEMP_MAX=500
+{block.replace('/sys/class/power_supply/battery/temp', str(tp))}
+if hot; then echo throttled; else echo full; fi
+"""
+                outs = []
+                for shell in SHELLS:
+                    r = run_shell(shell, script)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    outs.append(r.stdout.strip())
+                self.assertEqual(outs[0], outs[1], "bash and dash disagree")
+                results.append(outs[0])
+        self.assertEqual(
+            results,
+            ["full", "full", "full", "full", "full", "throttled", "throttled"],
+        )
+
+    def test_screen_off_can_be_disabled(self):
+        self.assertEqual(self.policy(1, 1, screen_off_min=0), "0 busy")
+
+    def test_volume_keys_map_to_the_two_profiles(self):
+        block = marked_block(
+            read("gpufix.sh"),
+            "# --- installer chooser (used from customize.sh, not by the governor loop) ---",
+            "# --- end installer chooser ---",
+        )
+        script = f"""
+set -eu
+GPUFIX_CHOICE=; CHOOSE_TIMEOUT=1; KEYCHECK=
+timeout() {{ shift; "$@"; }}
+getevent() {{ : "$@"; cat "$EVFILE"; }}
+{block}
+printf '%s\n' 'KEY_VOLUMEUP DOWN' > "$EVFILE"; CHOOSE_KEY=1 choose_preset
+printf '%s\n' 'KEY_VOLUMEDOWN DOWN' > "$EVFILE"; CHOOSE_KEY=1 choose_preset
+: > "$EVFILE"; CHOOSE_KEY=1 choose_preset
+"""
+        out = []
+        for shell in SHELLS:
+            with tempfile.TemporaryDirectory() as td:
+                result = run_shell(
+                    shell, script,
+                    env={**os.environ, "EVFILE": str(pathlib.Path(td) / "ev")},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                out.append([l for l in result.stdout.splitlines() if l in ("safer", "max")])
+        self.assertEqual(out[0], ["safer", "max", "safer"], out[0])
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
 
 
 class GpuGovernorTests(unittest.TestCase):
