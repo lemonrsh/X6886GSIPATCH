@@ -43,6 +43,7 @@ su -c "sh $M/gpufix.sh preset max"    # fastest OPP always, whole system (pinned
 su -c "sh $M/gpufix.sh preset stock"  # release the floor
 sh $M/gpufix.sh status                # state, live load, floor asked for, plan
 su -c "sh $M/gpufix.sh reapply"       # repair the config AND re-publish index + kHz (no args)
+su -c "sh $M/gpufix.sh cap"           # both presets stuck? list every ceiling + release a pin
 su -c "sh $M/gpufix.sh ceil 0"        # publish the top OPP on GED's upper bound (repairs 1100 MHz)
 su -c "sh $M/gpufix.sh release"       # floor to the lowest OPP (390) - works without /proc
 sh $M/gpufix.sh help                  # every command

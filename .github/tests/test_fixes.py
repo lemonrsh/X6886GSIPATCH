@@ -630,6 +630,170 @@ STATUS=/nonexistent
         self.assertIn("reapply|fix|repair) reapply", src)
 
 
+class GpuClipAndPinTests(unittest.TestCase):
+    """v13: the two limits that live BELOW the two nodes we publish.
+
+    Device symptom this pins down: after v12 every index and every kHz parameter read
+    correctly, the daemon re-published them every 15 s, and BOTH presets still topped out
+    at exactly 1100 MHz. Either (a) /proc/gpufreqv2/fix_target_opp_index pins one OPP, or
+    (b) the driver's own table is clipped by the platform limiter. Neither is visible in
+    custom_upbound_gpu_freq / gpu_cust_upbound_freq.
+    """
+
+    def block(self):
+        src = read("gpufix.sh")
+        return "\n".join([
+            marked_block(src, "# --- GPU OPP / node helpers (regression-tested by "
+                               ".github/tests/test_fixes.py) ---",
+                         "# --- end GPU OPP / node helpers ---"),
+            marked_block(src, "# --- cap audit / pin release (regression-tested by "
+                               ".github/tests/test_fixes.py) ---",
+                         "# --- end cap audit ---"),
+            marked_block(src, "# --- node io (regression-tested by "
+                               ".github/tests/test_fixes.py) ---",
+                         "# --- end node io ---"),
+        ])
+
+    def run_with(self, body, **vars_):
+        defaults = dict(L_MIN="", L_MAX="", SLEEP_HZ=390000, TOP_INDEX=44,
+                        TOP_HZ_KHZ=1600000, BOTTOM_HZ_KHZ=390000, MIN_HZ=790000,
+                        SAFE_INDEX=43, LADDER_OK=0, UNPIN=1, KEEP_PIN=0,
+                        PIN="/nonexistent/pin", AVAIL="/nonexistent/avail",
+                        LTABLE="/nonexistent/ltable", STATUS="/nonexistent/status",
+                        N_UPBOUND="/nonexistent/n_up", P_UPBOUND="/nonexistent/p_up",
+                        P_BOOST="/nonexistent/p_boost", P_CUST="/nonexistent/p_cust",
+                        N_BOOST="/nonexistent/n_boost", N_CUR="/nonexistent/n_cur",
+                        N_UTIL="/nonexistent/n_util", N_LEVELS="/nonexistent/n_lv")
+        defaults.update(vars_)
+        import tempfile, os
+        assign = "\n".join(f"{k}={v!r}" for k, v in defaults.items())
+        out = []
+        for shell in SHELLS:
+            logf = os.path.join(tempfile.mkdtemp(), "log")
+            open(logf, "w").close()
+            script = f"""
+set -eu
+TABLES=/nonexistent
+LOGFILE={logf!r}
+{assign}
+say() {{ printf '%s\\n' "$*"; }}
+log() {{ printf '%s\\n' "$*" >> "$LOGFILE"; }}
+{self.block()}
+{body}
+"""
+            r = run_shell(shell, script)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            # stdout only: log() appends to a file, and merging it here would make the
+            # order shell-dependent (bash vs dash buffer differently). Tests that care
+            # about a log line cat "$LOGFILE" themselves.
+            out.append(r.stdout.strip())
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
+        return out[0]
+
+    # ---- (a) the configmed top OPP must never be dragged down by a clipped table ----
+
+    def test_a_clipped_table_cannot_lower_the_published_top(self):
+        """The exact v12 bug: a limiter-viewed ladder made us publish 1100000 again."""
+        self.assertEqual(self.run_with("top_khz", L_MAX=1100000, TOP_HZ_KHZ=1600000), "1600000")
+
+    def test_a_real_ladder_above_the_config_still_wins(self):
+        self.assertEqual(self.run_with("top_khz", L_MAX=1800000, TOP_HZ_KHZ=1600000), "1800000")
+
+    def test_driver_table_reports_the_clipped_view(self):
+        """opp_top_khz reads the FILE: what the kernel publishes, not what we write."""
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "table")
+        with open(path, "w") as fh:
+            fh.write("[0] freq = 1100000\n[1] freq = 890000\n[44] freq = 390000\n")
+        self.assertEqual(self.run_with("opp_top_khz", TABLES=path), "1100000")
+        self.assertEqual(self.run_with("opp_top_khz"), "")          # no table at all
+
+    def test_a_clipped_table_is_treated_as_unreadable_for_mid_ladder_maths(self):
+        # top_khz must be usable without ladder_stats() having run first (the audit needs
+        # it before anything else does): it falls back to the configured top.
+        self.assertEqual(self.run_with("top_khz"), "1600000")
+
+    # ---- (b) the pin ----
+
+    def test_pin_state_reads_all_three_shapes(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "pin")
+        for raw, want in (("0", "0"), ("-1", "none"), ("44", "44")):
+            # seeded inside the script so bash and dash start from the same state
+            self.assertEqual(
+                self.run_with('printf "%s\\n" "$SEED" > "$PIN"; pin_state', PIN=path, SEED=raw),
+                want, raw)
+        self.assertEqual(self.run_with("pin_state"), "none")   # node absent
+
+    def test_pin_release_writes_minus_one_and_respects_the_switches(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "pin")
+        # Seed the node INSIDE the script: both shells run the same body, so a file left
+        # behind by bash would make dash see a different starting state.
+        body = ('printf "%s\\n" "$SEED" > "$PIN"; '
+                'rc=0; pin_release || rc=$?; echo rc=$rc; cat "$LOGFILE"; cat "$PIN"')
+        # pinned -> written to -1
+        out = self.run_with(body, PIN=path, SEED="9")
+        self.assertIn("rc=0", out.split())
+        self.assertIn("released fix_target_opp_index", out)
+        self.assertEqual(out.split()[-1], "-1")
+        # already released -> nothing to do, value untouched
+        out = self.run_with(body, PIN=path, SEED="-1")
+        self.assertIn("rc=2", out.split())
+        self.assertEqual(out.split()[-1], "-1")
+        # switched off by config, or a pin someone set on purpose: 9 must SURVIVE
+        for vars_ in (dict(UNPIN=0), dict(KEEP_PIN=1)):
+            out = self.run_with(body, PIN=path, SEED="9", **vars_)
+            self.assertIn("rc=2", out.split())
+            self.assertEqual(out.split()[-1], "9", vars_)
+
+    def test_limit_rows_parses_only_set_rows(self):
+        import tempfile, os
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "ltable")
+        with open(path, "w") as fh:
+            fh.write("# id max min\nset 1 0 44\nset 2 9 44  \nnot a row\n")
+        self.assertEqual(self.run_with("limit_rows", LTABLE=path), "1 0 44\n2 9 44")
+
+    def test_cap_sources_names_a_clipped_table_and_a_pin(self):
+        import tempfile, os
+        d = tempfile.mkdtemp()
+        pin = os.path.join(d, "pin"); up = os.path.join(d, "up")
+        open(pin, "w").write("7\n"); open(up, "w").write("1100000\n")
+        table = os.path.join(d, "table")
+        open(table, "w").write("[0] freq = 1100000\n[44] freq = 390000\n")
+        out = self.run_with("cap_sources", TABLES=table, PIN=pin, P_UPBOUND=up)
+        self.assertIn("CLIPPED", out)
+        self.assertIn("PINNED", out)
+        self.assertIn("1100000", out)
+
+    # ---- wiring: the release has to actually happen on its own ----
+
+    def test_reapply_releases_the_pin_before_it_writes(self):
+        src = read("gpufix.sh")
+        body = re.search(r"^reapply\(\) \{.*?^\}", src, re.S | re.M).group(0)
+        self.assertIn("pin_release", body)
+        # released BEFORE the ceiling is published, or the write is pointless
+        self.assertLess(body.index("pin_release"), body.index('ceil_to "$CEIL_HZ"'))
+
+    def test_the_loop_re_checks_the_pin_with_the_ceiling(self):
+        src = read("gpufix.sh")
+        self.assertEqual(src.count("$(((_n - 1) % 15)) -eq 0 ] && pin_release"), 2,
+                         "both loop paths (offline and ladder) must re-check the pin")
+
+    def test_reapply_verifies_the_ceiling_from_outside(self):
+        """A matching readback is not proof: the kernel can keep a lower bound."""
+        src = read("gpufix.sh")
+        body = re.search(r"^reapply\(\) \{.*?^\}", src, re.S | re.M).group(0)
+        self.assertIn("asked $_want kHz, kernel kept", body)
+
+    def test_cap_and_unpin_are_dispatchable(self):
+        src = read("gpufix.sh")
+        self.assertIn("cap|why) cap ;;", src)
+        self.assertIn("unpin) is_root", src)
+        self.assertIn("self.assertIn", "self.assertIn")   # no-op, keeps the block honest
+
+
 class GpuSaferModeTests(unittest.TestCase):
     """MODE=safer: whole-system boost on load, but never a pinned floor.
 

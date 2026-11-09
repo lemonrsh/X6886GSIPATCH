@@ -1,6 +1,48 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v13: if BOTH presets are 1100 MHz, it is a pin or a clipped driver table
+
+v12 made every node read back perfectly — and the clock could still sit at 1100 MHz in
+both presets, because two limits live *below* the nodes this module writes and are
+invisible in them:
+
+1. **`/proc/gpufreqv2/fix_target_opp_index`** — a pinned target OPP (`0..n` pins, `-1`
+   releases). The vendor power HAL sets it after a thermal event and never clears it. A
+   pin overrides every preset. v13 releases it on `reapply`, re-checks it every 15 s, and
+   `revert` puts it back.
+2. **A clipped driver table.** With a platform limiter active, `/proc/gpufreqv2` only
+   *publishes* up to 1100000. v12 read that as "the top OPP is 1100" and re-published
+   `gpu_cust_upbound_freq=1100000` every 15 seconds — re-applying the cap it exists to
+   lift. `top_khz()` now takes the larger of the configured top and the live table, and
+   `ceil 0` resolves to the configured top, never to a limited driver's own ceiling.
+
+### One command when it happens
+
+```sh
+su -c "sh /data/adb/modules/gpu_dvfs_x6886/gpufix.sh cap"
+```
+
+```
+== ceiling audit (want: 1600000 kHz = the top OPP)
+driver table: 1100000 kHz - CLIPPED, expected 1600000 kHz
+limit_table:  1 9 44;
+hal index:    0   (0 = the fastest OPP)
+hal param:    1100000   (gpu_cust_upbound_freq, kHz)
+pin:          7 - PINNED, this freezes every preset
+released a stale fix_target_opp_index pin - re-run 'reapply' now
+```
+
+That screen names the one thing holding the clock down. `unpin` releases a pin on its own;
+`reapply` always tries the release first, because a pinned target makes every other write
+meaningless.
+
+`status` also reports it now, without being asked: a `pin:` line when something pinned the
+GPU, and a `cap:` line when the driver's own table is shorter than the configured top OPP.
+
+New keys: `UNPIN=1` (release stale pins, default), `KEEP_PIN=0` (set to 1 to respect a pin
+someone set deliberately).
+
 ## v12: one command, and the 1100 MHz cap is gone for real
 
 **The actual cause** of "safer still shows 1100 MHz": on a build where `/proc/gpufreqv2` is

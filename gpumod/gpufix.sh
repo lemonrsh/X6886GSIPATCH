@@ -57,6 +57,8 @@
 #   revert            restore the values saved by the first write (a reboot does too)
 #   ceil [HZ]         publish the GED upper bound (0 = the top OPP); repairs a 1100 MHz cap
 #   reapply           re-publish the whole config to the nodes (indices AND kHz), no args
+#   cap               audit every ceiling (driver table, limit_table, pin) and release a pin
+#   unpin             release /proc/gpufreqv2/fix_target_opp_index on its own
 #   release           drop the floor to SLEEP_HZ (the lowest OPP), works offline
 #   preset NAME       safer | boost | max | stock - writes the config and applies at once
 #   choose            installer helper: asks with the volume keys (up=safer, down=max)
@@ -78,6 +80,9 @@ GED=/sys/kernel/ged/hal
 P=/sys/module/ged/parameters
 TABLES="/proc/gpufreqv2/gpu_working_opp_table /proc/gpufreqv2/stack_working_opp_table"
 STATUS=/proc/gpufreqv2/gpufreq_status
+PIN=/proc/gpufreqv2/fix_target_opp_index    # pinned target OPP: 0..n pins, -1 releases
+AVAIL=/proc/gpufreqv2/available_opp_table  # what the driver will actually hand out
+LTABLE=/proc/gpufreqv2/limit_table         # platform limiter rows: "set <id> <max> <min>"
 N_CUR=$GED/current_freqency
 N_UTIL=$GED/gpu_utilization
 N_BOOST=$GED/custom_boost_gpu_freq
@@ -115,6 +120,8 @@ TOP_INDEX=44         # ladder index of the slowest OPP; used only when the ladde
 TOP_HZ_KHZ=1600000   # kHz of the fastest OPP (TOP_INDEX/TOP_HZ=0 refer to this)
 BOTTOM_HZ_KHZ=390000 # kHz of the slowest OPP (SLEEP_HZ / TOP_INDEX)
 SYNC_PARAM=1         # keep gpu_cust_boost_freq (module parameter) in sync with the floor
+UNPIN=1              # release a stale fix_target_opp_index pin (a pin freezes BOTH presets)
+KEEP_PIN=0           # 1 = if something pinned the GPU on purpose, leave it alone
 SAMPLE_S=10          # default probe/verify window
 num_or() {   # $1 value, $2 fallback -> prints a sane non-negative integer
   case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac
@@ -150,6 +157,8 @@ TOP_HZ_KHZ=$(num_or "$TOP_HZ_KHZ" 1600000)
 BOTTOM_HZ_KHZ=$(num_or "$BOTTOM_HZ_KHZ" "$SLEEP_HZ")
 CEIL_HZ=$(num_req "$CEIL_HZ" 1600000)    # 0 = top OPP; empty is not allowed for the ceiling
 SYNC_PARAM=$(num_or "$SYNC_PARAM" 1)
+UNPIN=$(num_or "$UNPIN" 1)
+KEEP_PIN=$(num_or "$KEEP_PIN" 0)
 SAMPLE_S=$(num_or "$SAMPLE_S" 10)
 case "$MODE" in adaptive|safer|floor|off) ;; *) MODE=adaptive ;; esac
 [ "$INTERVAL" -ge 1 ] || INTERVAL=1
@@ -158,7 +167,14 @@ case "$MODE" in adaptive|safer|floor|off) ;; *) MODE=adaptive ;; esac
 log()  { echo "$(date +%F_%T) $*" >> "$LOG"; }
 say()  { printf '%s\n' "$*"; }
 both() { say "$*"; log "$*"; }
+# --- node io (regression-tested by .github/tests/test_fixes.py) ---
 node_val() { read -r _v _rest 2>/dev/null < "$1"; printf '%s' "$_v"; }
+write_node() {   # $1 node, $2 value; succeeds only if the readback matches
+  [ -w "$1" ] || return 1
+  printf '%s\n' "$2" > "$1" 2>/dev/null || return 1
+  [ "$(node_val "$1")" = "$2" ]
+}
+# --- end node io ---
 
 # --- GPU OPP / node helpers (regression-tested by .github/tests/test_fixes.py) ---
 opp_lines() {   # print "index freq" for every published OPP: best source first
@@ -186,6 +202,9 @@ OPPEOF
 }
 resolve_opp() {   # $1 = wanted kHz -> sets R_IDX R_FREQ (0 = fastest; else smallest OPP >= wanted)
   R_IDX=""; R_FREQ=""
+  # 0 means "the top OPP by name", which is the configured top - not whatever a limited
+  # driver happens to publish. Reading it off the table is the 1100 MHz bug in miniature.
+  if [ "$1" = 0 ]; then R_IDX=0; R_FREQ=$(top_khz); return 0; fi
   _fast_i=""; _fast_f=0
   _lines=$(opp_lines) || return 1
   [ -n "$_lines" ] || return 1
@@ -198,6 +217,13 @@ resolve_opp() {   # $1 = wanted kHz -> sets R_IDX R_FREQ (0 = fastest; else smal
   done <<OPPEOF
 $_lines
 OPPEOF
+  # A driver table clipped by a limiter only lists up to its current cap. Asking for the
+  # configured top OPP means "try to lift that cap", so resolve to the top OPP rather than
+  # quietly writing the clamped value back - that clamp is the 1100 MHz bug itself.
+  _t=$(top_khz)
+  if [ -n "$_t" ] && [ "$1" -ge "$_t" ] 2>/dev/null; then
+    R_IDX=0; R_FREQ=$_t; return 0
+  fi
   [ -n "$R_FREQ" ] || { R_IDX=$_fast_i; R_FREQ=$_fast_f; }
   [ -n "$R_FREQ" ]
 }
@@ -220,14 +246,28 @@ bottom_khz() {   # kHz of the slowest OPP: the live ladder wins, else BOTTOM_HZ_
     *) [ "$L_MIN" -gt 0 ] && printf '%s\n' "$L_MIN" || printf '390000\n' ;;
   esac
 }
-top_khz() {   # kHz of the fastest OPP: the live ladder wins, else TOP_HZ_KHZ
+top_khz() {   # kHz that "index 0" means: NEVER below the configured top OPP
+  # The live ladder does not win here, the KNOWN top does. /proc/gpufreqv2 publishes a
+  # *clipped* table whenever a limiter is active (stock upper bound, platform limit_table),
+  # so trusting L_MAX lets a 1100 MHz view of the ladder make us publish
+  # gpu_cust_upbound_freq=1100000 - i.e. the script would re-apply the very cap it exists
+  # to lift, every 15 s. Take the larger of the two (see opp_top_khz below).
+  _c=${TOP_HZ_KHZ:-}
+  case "$_c" in ''|*[!0-9]*) _c=1600000 ;; esac
   case "${L_MAX:-}" in
-    ''|*[!0-9]*) case "${TOP_HZ_KHZ:-}" in
-                   ''|*[!0-9]*) printf '1600000\n' ;;
-                   *) printf '%s\n' "$TOP_HZ_KHZ" ;;
-                 esac ;;
-    *) [ "$L_MAX" -gt 0 ] && printf '%s\n' "$L_MAX" || printf '1600000\n' ;;
+    ''|*[!0-9]*) printf '%s\n' "$_c" ;;
+    *) if [ "$L_MAX" -gt "$_c" ]; then printf '%s\n' "$L_MAX"; else printf '%s\n' "$_c"; fi ;;
   esac
+}
+opp_top_khz() {   # kHz of the fastest OPP the KERNEL publishes (clipped view included)
+  # Computed here, not read from L_MAX: L_MAX is only filled by ladder_stats(), and an
+  # audit that silently reports "unreadable" because nobody called it first is useless.
+  _m=$(opp_lines 2>/dev/null) || { printf ''; return 0; }
+  [ -n "$_m" ] || { printf ''; return 0; }
+  printf '%s\n' "$_m" | while read -r _i _f; do
+    case "$_i$_f" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\n' "$_f"
+  done | sort -n | tail -1
 }
 # --- end OPP end helper ---
 offline_index() {   # $1 = kHz -> index via the shell-only fallback; sets R_IDX R_FREQ
@@ -249,6 +289,61 @@ ladder_available() {   # remember once whether the kernel ladder can be read at 
   [ "$LADDER_OK" = 1 ]
 }
 # --- end GPU OPP / node helpers ---
+# --- cap audit / pin release (regression-tested by .github/tests/test_fixes.py) ---
+# Why this exists: everything above writes two GED nodes, and on a device where both read
+# back perfectly the GPU can STILL sit at one frequency forever if (a) the driver target is
+# pinned, or (b) the platform limiter clipped the driver's own table. Neither shows up in
+# the two nodes we publish, which is exactly why 'both presets are 1100' could survive v12.
+pin_state() {   # "none" | "<n>" | "" when the node is absent or unreadable
+  [ -r "$PIN" ] || { printf 'none'; return 0; }
+  _p=$(node_val "$PIN")
+  case "$_p" in
+    ''|*[!0-9-]*) printf '' ;;
+    -1) printf 'none' ;;
+    *) printf '%s' "$_p" ;;
+  esac
+}
+pin_release() {   # drop a stale pin; exit 0 = released now, 2 = nothing pinned, 1 = refusal
+  [ "$UNPIN" = 1 ] || return 2
+  [ "$KEEP_PIN" = 1 ] && return 2
+  _ps=$(pin_state)
+  [ "$_ps" = none ] && return 2
+  [ -n "$_ps" ] || return 2                  # node absent/unreadable: nothing to undo
+  write_node "$PIN" -1 2>/dev/null || return 1
+  log "pin: released fix_target_opp_index (was $_ps) - a pin freezes every preset"
+  return 0
+}
+limit_rows() {   # readable limiter rows as "id max min", one per line (empty = no limiter)
+  [ -r "$LTABLE" ] || return 0
+  while read -r _a _b _c _d; do
+    case "$_a" in set) case "$_b$_c$_d" in
+        ''|*[!0-9]*) ;;                      # header/comment/blank: skip
+        *) printf '%s %s %s\n' "$_b" "$_c" "$_d" ;; esac ;;
+    esac
+  done < "$LTABLE"
+}
+cap_sources() {   # every place a ceiling can hide, one aligned line each (read-only)
+  # This is what turns "still 1100?" into a single paste instead of four rounds of guessing.
+  _t=$(opp_top_khz); _c=$(top_khz); _ps=$(pin_state)
+  if [ -z "$_t" ]; then printf 'driver table: unreadable (top treated as %s kHz)\n' "$_c"
+  elif [ "$_t" -lt "$_c" ]; then
+    printf 'driver table: %s kHz - CLIPPED, expected %s kHz\n' "$_t" "$_c"
+  else printf 'driver table: %s kHz\n' "$_t"
+  fi
+  _lt=$(limit_rows)
+  if [ -n "$_lt" ]; then printf 'limit_table:  %s\n' "$(printf '%s' "$_lt" | tr '\n' ';')"
+  elif [ -r "$LTABLE" ]; then printf 'limit_table:  no rows (nothing limited)\n'
+  else printf 'limit_table:  n/a\n'
+  fi
+  printf 'hal index:    %s   (0 = the fastest OPP)\n' "$(node_val "$N_UPBOUND")"
+  printf 'hal param:    %s   (gpu_cust_upbound_freq, kHz)\n' "$(node_val "$P_UPBOUND")"
+  case "$_ps" in
+    none) printf 'pin:          none (released)\n' ;;
+    '')   printf 'pin:          n/a (node absent)\n' ;;
+    *)    printf 'pin:          %s - PINNED, this freezes every preset\n' "$_ps" ;;
+  esac
+}
+# --- end cap audit ---
 
 # --- preset helpers (regression-tested by .github/tests/test_fixes.py) ---
 preset_values() {   # $1 preset -> "mode top_hz load_on hold_s interval ceil"; ceil 0 = top OPP
@@ -457,11 +552,6 @@ limits() {   # one-line form of the driver's own limiter rows
     sed -n -e 's/.*\[GPU-LimitC\].*CeilingIndex: *\([0-9][0-9]*\).*/C=\1/p' \
            -e 's/.*\[GPU-LimitF\].*FloorIndex: *\([0-9][0-9]*\).*/F=\1/p' | tr '\n' ' ' | sed 's/ *$//'
 }
-write_node() {   # $1 node, $2 value; succeeds only if the readback matches
-  [ -w "$1" ] || return 1
-  printf '%s\n' "$2" > "$1" 2>/dev/null || return 1
-  [ "$(node_val "$1")" = "$2" ]
-}
 snapshot() {   # keep the pre-change values once; never overwrite a real snapshot
   [ -f "$ORIG" ] && return 0
   {
@@ -470,6 +560,7 @@ snapshot() {   # keep the pre-change values once; never overwrite a real snapsho
     printf 'custom_boost_gpu_freq=%s\n' "$(node_val "$N_BOOST")"
     printf 'custom_upbound_gpu_freq=%s\n' "$(node_val "$N_UPBOUND")"
     printf 'gpu_cust_upbound_freq=%s\n' "$(node_val "$P_UPBOUND")"
+    printf 'fix_target_opp_index=%s\n' "$(pin_state)"
   } > "$ORIG"
   log "snapshot $(tr '\n' ' ' < "$ORIG")"
 }
@@ -567,6 +658,16 @@ status() {
   else
     say "opp:   ladder not readable ($TABLES) - middle-of-ladder writes unavailable"
     say "       (top-OPP/slowest-OPP writes still work: preset max / preset stock)"
+  fi
+  _ps=$(pin_state)
+  case "$_ps" in
+    ''|none) ;;
+    *) say "pin:   fix_target_opp_index=$_ps - a PIN overrides both nodes below, in every preset." ;;
+  esac
+  _t=$(opp_top_khz); _c=$(top_khz)
+  if [ -n "$_t" ] && [ "$_t" -lt "$_c" ]; then
+    say "cap:   the driver's own table stops at $_t kHz, not $_c: a limiter below GED is active."
+    say "       '$ME cap' names it."
   fi
   _dv=$(node_val "$P_DVFS"); _ceiling=$(limits | sed -n 's/.*C=\([0-9]*\).*/\1/p')
   _ub=$(node_val "$P_UPBOUND"); _ubi=$(node_val "$N_UPBOUND")
@@ -892,7 +993,14 @@ ceil() {   # $1 = kHz for the GED upper bound, 0 = the top OPP (default CEIL_HZ)
        setkey "$CONF" CEIL_HZ "$_want" ;;
     2) say "ceiling already level $R_IDX ($(hz_text "$R_FREQ"))"
        setkey "$CONF" CEIL_HZ "$_want" ;;
-    *) say "! could not move the ceiling (custom_upbound_gpu_freq reads $(node_val "$N_UPBOUND"))"; return 1 ;;
+    *) say "! could not move the ceiling (custom_upbound_gpu_freq reads $(node_val "$N_UPBOUND"))"
+       _cl=$(opp_top_khz); _ct=$(top_khz)
+       case "$_cl" in
+         ''|*[!0-9]*) ;;
+         *) [ "$_cl" -lt "$_ct" ] && \
+              say "  the driver publishes only $_cl kHz, not $_ct: a limiter below GED is active ('$ME cap')." ;;
+       esac
+       return 1 ;;
   esac
   _ub=$(node_val "$P_UPBOUND"); _ubi=$(node_val "$N_UPBOUND")
   say "check:  custom_upbound_gpu_freq=$_ubi gpu_cust_upbound_freq=${_ub:-?}"
@@ -900,10 +1008,22 @@ ceil() {   # $1 = kHz for the GED upper bound, 0 = the top OPP (default CEIL_HZ)
   # Offline we cannot name a mid-ladder frequency, so only report what the node says.
   if [ -n "$_ub" ] && [ "$_ub" != 0 ] && [ "$_ubi" = 0 ] && [ "$_want" = 0 ] &&
      ! ladder_available; then
-    say "note:   the hal index is 0 (the top OPP); the kHz parameter still reads $_ub because"
-    say "        the ladder is unreadable here. GED enforces the index, so this is expected."
+    say "note:   the hal index is 0 (the top OPP) but the kHz parameter still reads $_ub:"
+    say "        the driver would not take the configured top. Run '$ME cap' to see why."
   fi
   say "undo:   $ME revert    (or reboot)"
+}
+
+cap() {   # "who is holding the clock down?" - audit every source, then release a pin
+  is_root || { say "cap needs root"; return 1; }
+  say "== ceiling audit (want: $(top_khz) kHz = the top OPP)"
+  cap_sources
+  pin_release
+  case $? in
+    0) say "released a stale fix_target_opp_index pin - re-run '$ME reapply' now" ;;
+    2) say "nothing pinned: the two nodes above are the only GED-side limits" ;;
+  esac
+  say "next: $ME reapply   (re-publishes both nodes from the config)"
 }
 
 reapply() {   # re-publish the current config to the nodes; no arguments, no guessing
@@ -929,15 +1049,34 @@ reapply() {   # re-publish the current config to the nodes; no arguments, no gue
     say "heal:   TEMP_MAX 430 -> 500 (the limit is 50 C, not 43 C)"
   fi
   say "config: MODE=$MODE min=$MIN_HZ top=$TOP_HZ sleep=$SLEEP_HZ ceil=$CEIL_HZ temp=$((TEMP_MAX / 10))C"
+  # 0. a pinned target OPP overrides BOTH nodes below: release it first or nothing counts
+  pin_release
+  case $? in
+    0) say "heal:   released a stale fix_target_opp_index pin (it freezes every preset)" ;;
+    1) say "! could not release the fix_target_opp_index pin"; _rc=1 ;;
+  esac
   # 1. the ceiling - the one that silently capped the GPU at 1100 MHz
+  _cc=0
   case "$CEIL_HZ" in
     ''|*[!0-9]*) say "! CEIL_HZ is not a number ($CEIL_HZ)"; _rc=1 ;;
     *) ceil_to "$CEIL_HZ"
        case $? in
          0|2) say "ceiling: hal index $(node_val "$N_UPBOUND") / $(node_val "$P_UPBOUND") kHz" ;;
-         *)   say "! could not publish the ceiling"; _rc=1 ;;
+         *)   say "! could not publish the ceiling"; _cc=1; _rc=1 ;;
        esac ;;
   esac
+  # A readback that matches the request is not proof the kernel agrees: re-check it from
+  # the OUTSIDE (what the driver is willing to hand out), and say it plainly if it differs.
+  if [ "$_cc" = 0 ]; then
+    _want=$(top_khz); _got=$(node_val "$P_UPBOUND")
+    case "$_got" in
+      ''|*[!0-9]*) say "! gpu_cust_upbound_freq is unreadable" ;;
+      *) if [ "$_got" -lt "$_want" ]; then
+           say "! ceiling: asked $_want kHz, kernel kept $_got - a limiter below GED is active"
+           say "  $ME cap   lists every source (driver table, limit_table, pin)."
+         fi ;;
+    esac
+  fi
   # 2. the floor, at the end of the ladder this mode rests at
   _frc=1
   if [ "$MODE" = safer ] && ! ladder_available && [ -n "$SAFE_INDEX" ]; then
@@ -959,7 +1098,13 @@ reapply() {   # re-publish the current config to the nodes; no arguments, no gue
     0|2) say "floor:   hal index $(node_val "$N_BOOST") / $(node_val "$P_CUST") kHz" ;;
     *)   say "! could not publish the floor at $(hz_text "$_e")"; _rc=1 ;;
   esac
-  # 3. wake the running loop so it does not undo any of this on its next tick
+  # 3. a driver table that is still clipped means a limiter BELOW GED is active: say it
+  _t=$(opp_top_khz); _c=$(top_khz)
+  if [ -n "$_t" ] && [ "$_t" -lt "$_c" ]; then
+    say "! the driver still publishes max $_t kHz (expected $_c): a limiter below GED"
+    say "  is active - '$ME status' names it."
+  fi
+  # 4. wake the running loop so it does not undo any of this on its next tick
   : > "$D/.gpufix.reload" 2>/dev/null
   if [ -n "$CPU_ON" ] && [ "$CPU_ON" -gt 0 ]; then
     say "cpu:     UI work (>${CPU_ON}%) raises the floor too"
@@ -1024,11 +1169,22 @@ ceil_to() {   # publishes GED's upper bound: index on the hal node, kHz on the p
   write_node "$N_UPBOUND" "$R_IDX" || return 1
   # Publish the kHz as well, from the configured end of the ladder if the live one is
   # unknown: the hal index alone does not lift GED's real cap on this kernel.
-  [ -n "$_pk" ] && [ "$_pk" != 0 ] && write_node "$P_UPBOUND" "$_pk" 2>/dev/null
+  if [ -n "$_pk" ] && [ "$_pk" != 0 ]; then
+    write_node "$P_UPBOUND" "$_pk" 2>/dev/null && return 0
+    # The kernel refused the configured top: fall back to what it actually publishes, but
+    # never silently - that refusal IS the answer to "why is it still 1100?".
+    _cl=$(opp_top_khz)
+    if [ -n "$_cl" ] && [ "$_cl" != "$_pk" ] && write_node "$P_UPBOUND" "$_cl" 2>/dev/null; then
+      log "ceil: kernel refused $_pk, kept its own top $_cl (limiter below GED)"
+      say "! ceil: the kernel refused $_pk kHz and kept $_cl - a limiter caps the GPU"
+      return 0
+    fi
+    return 1
+  fi
   return 0
 }
 
-revert() {
+revert() {   # restore what snapshot() saved, including a pin we released
   is_root || { say "revert needs root"; return 1; }
   if [ ! -f "$ORIG" ]; then
     say "no snapshot at $ORIG - this script changed nothing. A reboot also restores the kernel defaults."
@@ -1044,11 +1200,15 @@ revert() {
       custom_boost_gpu_freq) _n=$N_BOOST ;;
       custom_upbound_gpu_freq) _n=$N_UPBOUND ;;
       gpu_cust_upbound_freq) _n=$P_UPBOUND ;;
+      fix_target_opp_index) _n=$PIN ;;   # "none" is not numeric: skipped above, see below
       *) continue ;;
     esac
     if write_node "$_n" "$_v"; then _ok=$((_ok + 1)); both "restored $_k=$_v"
     else _fail=$((_fail + 1)); say "! could not restore $_k=$_v ($_n)"; fi
   done < "$ORIG"
+  # a snapshot of "none" means the pin was already released; -1 keeps it that way
+  _pn=$(sed -n 's/^fix_target_opp_index=//p' "$ORIG" 2>/dev/null)
+  [ "$_pn" = "none" ] && { write_node "$PIN" -1 && both "pin kept released"; }
   if [ "$_fail" -eq 0 ]; then
     rm -f "$ORIG"
     say "reverted ($_ok values)."
@@ -1068,7 +1228,10 @@ run() {   # the adaptive loop
   while :; do
     # Re-read the config every ~15 ticks, or at once when `preset` asked for it -
     # otherwise a running loop would keep its old MODE/TOP_HZ and undo the preset.
-    if [ $((_n % 15)) -eq 0 ] || [ -f "$D/.gpufix.reload" ]; then
+    # _n is incremented at the top of the body, so on the first pass it is already 1 and a
+    # plain _n % 15 would skip the initial reload; (_n - 1) makes the first tick count as
+    # zero and keeps reload, ceiling and pin re-assert on the SAME cadence.
+    if [ $(((_n - 1) % 15)) -eq 0 ] || [ -f "$D/.gpufix.reload" ]; then
       rm -f "$D/.gpufix.reload"
       [ -f "$CONF" ] && . "$CONF"
       ST=0; LAST=0   # a new MODE starts fresh; do not inherit a "busy" hold from the old one
@@ -1157,7 +1320,10 @@ run() {   # the adaptive loop
         fi
       fi
       [ "$MODE" = safer ] && [ -z "$CEIL_HZ" ] && CEIL_HZ=0   # safer always needs the top OPP open
-      [ -n "$CEIL_HZ" ] && [ $((_n % 15)) -eq 0 ] && ceil_to "$CEIL_HZ" >/dev/null 2>&1
+      [ -n "$CEIL_HZ" ] && [ $(((_n - 1) % 15)) -eq 0 ] && ceil_to "$CEIL_HZ" >/dev/null 2>&1
+      # a vendor power HAL re-pins after thermal events; a pin would silently
+      # override both nodes we just wrote, in every preset.
+      [ $(((_n - 1) % 15)) -eq 0 ] && pin_release >/dev/null 2>&1
       sleep "$INTERVAL"
       continue
     fi
@@ -1185,7 +1351,10 @@ run() {   # the adaptive loop
       fi
     fi
     [ "$MODE" = safer ] && [ -z "$CEIL_HZ" ] && CEIL_HZ=0   # safer always needs the top OPP open
-    [ -n "$CEIL_HZ" ] && [ $((_n % 15)) -eq 0 ] && ceil_to "$CEIL_HZ" >/dev/null 2>&1
+    [ -n "$CEIL_HZ" ] && [ $(((_n - 1) % 15)) -eq 0 ] && ceil_to "$CEIL_HZ" >/dev/null 2>&1
+    # a vendor power HAL re-pins after thermal events; a pin would silently
+    # override both nodes we just wrote, in every preset.
+    [ $(((_n - 1) % 15)) -eq 0 ] && pin_release >/dev/null 2>&1
     sleep "$INTERVAL"
   done
 }
@@ -1218,6 +1387,13 @@ case "$1" in
   apply) apply "$2" ;;
   ceil) ceil "$2" ;;
   reapply|fix|repair) reapply ;;
+  cap|why) cap ;;
+  unpin) is_root || { say "unpin needs root"; exit 1; }
+         pin_release; case $? in
+           0) say "released a stale fix_target_opp_index pin" ;;
+           2) say "nothing is pinned (fix_target_opp_index is $(pin_state))" ;;
+           *) say "! could not release the pin" ;;
+         esac ;;
   preset) shift; preset "$1" ;;
   choose) choose_preset ;;
   release) release ;;
@@ -1225,5 +1401,5 @@ case "$1" in
   revert) revert ;;
   boot) boot ;;
   help|-h|--help) sed -n '/^# Modes:/,/^# Config:/p' "$0" | sed 's/^# \{0,1\}//;$d' ;;
-  *) say "usage: $ME [status|reapply|probe [s]|apply [hz]|ceil [hz|0]|release|preset safer|boost|max|stock|verify [s]|run|revert|boot]"; exit 2 ;;
+  *) say "usage: $ME [status|reapply|cap|unpin|probe [s]|apply [hz]|ceil [hz|0]|release|preset safer|boost|max|stock|verify [s]|run|revert|boot]"; exit 2 ;;
 esac

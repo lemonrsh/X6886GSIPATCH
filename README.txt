@@ -51,6 +51,7 @@ GPU (v11.7, optional): the installer asks with the volume keys -
   Commands: status | reapply | probe | verify | apply | ceil [hz|0] | release | preset | revert | help
   'reapply' (no arguments) re-publishes everything AND repairs older configs - run it after
   any update if you ever see 1100 MHz instead of the top OPP.
+  'cap' audits every ceiling (driver table, limit_table, pin) and releases a stale pin.
 "max" pins floor = ceiling = the top OPP (1600 MHz): maximum performance with the
 battery and heat cost that implies; above 43 C battery the floor drops to HOT_HZ (default
 stock) until the phone cools. It works even when /proc/gpufreqv2 is denied to the shell:
