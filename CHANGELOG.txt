@@ -1,3 +1,31 @@
+v11.5 (GPU ceiling control + works on locked-down /proc)
+* WHY: on the reporter's GSI, /proc/gpufreqv2/* is denied to the shell even as root (the
+  vendor power HAL keeps its own label). 'preset max' therefore saved its config and wrote
+  nothing, and the loop was inert. Separately, the real wall turned out to be GED's upper
+  bound: gpu_cust_upbound_freq was 1100000, so no floor could ever give 1600 MHz.
+* 'preset max' now works with no ladder at all: index 0 is the driver's own name for the
+  fastest OPP, so the floor (custom_boost_gpu_freq) AND the ceiling
+  (custom_upbound_gpu_freq) are written as 0, with gpu_cust_boost_freq /
+  gpu_cust_upbound_freq kept in sync. boost/stock refuse on such a build instead of
+  writing a guessed index.
+* New CEIL_HZ (default 1600000, 0 = fastest OPP): the governor publishes GED's upper
+  bound, re-asserts it when something rewrites it, and 'revert' now snapshots and
+  restores both ceiling nodes as well.
+* New TOP_INDEX (default 44): the slowest OPP, used only when the ladder is unreadable.
+  The thermal brake now works there too - at/above TEMP_MAX the floor goes to index 44
+  instead of the loop silently doing nothing.
+* OFFLINE mode is detected once (ladder_available) and reported by 'status', which also
+  prints the live upper bound and warns when it is not the top OPP ("GED will not go
+  above this"). 'probe'/'verify' judge a floor+ceiling index 0 as a pin at the top OPP
+  instead of "cannot be judged".
+* Fixed: 'preset max' passed CEIL_HZ=1600000 (a kHz value that needs the ladder) to the
+  ceiling writer; the ceiling intent is now expressed as index 0.
+* Fixed: 0 kHz wording throughout ('floor moves to 0 kHz while busy'), and index 0 is
+  described as "the top OPP".
+* Tests: 29 host cases - offline index rules (top/slowest only, mid-ladder refused),
+  cached ladder detection, preset values including the ceiling field, plus everything
+  from v11.4.
+
 v11.4 (GPU presets: max / boost / stock)
 * New `gpufix.sh preset NAME`, the one command that matters:
     max    MODE=floor, TOP_HZ=0  -> floor = the fastest OPP (1600 MHz) all the time,

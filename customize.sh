@@ -92,6 +92,8 @@ HOLD_S=20            # mode=adaptive only: keep the floor up this long after the
 INTERVAL=1           # governor period in seconds
 HOT_HZ=0             # floor while above TEMP_MAX; 0 = MIN_HZ, e.g. 900000 to stay fast
 TEMP_MAX=430         # >= this battery temperature (deci-degC) lowers the floor
+CEIL_HZ=1600000      # GED upper bound published by the governor; 0 = the fastest OPP
+TOP_INDEX=44         # slowest OPP index, used only when /proc/gpufreqv2 is unreadable
 SYNC_PARAM=1         # keep gpu_cust_boost_freq in sync with the floor
 SAMPLE_S=10          # default probe/verify window in seconds
 CONF
@@ -111,6 +113,8 @@ addkey "$DATA/fod/gpu.conf" MIN_HZ 390000
 addkey "$DATA/fod/gpu.conf" LOAD_ON 60
 addkey "$DATA/fod/gpu.conf" HOLD_S 20
 addkey "$DATA/fod/gpu.conf" HOT_HZ 0
+addkey "$DATA/fod/gpu.conf" CEIL_HZ 1600000
+addkey "$DATA/fod/gpu.conf" TOP_INDEX 44
 addkey "$DATA/fod/gpu.conf" TOP_HZ 0
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling

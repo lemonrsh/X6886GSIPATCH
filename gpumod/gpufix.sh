@@ -21,11 +21,19 @@
 # TOPPING OUT THE GPU FOR THE WHOLE SYSTEM:  TOP_HZ=0 means "the fastest OPP this
 # driver publishes" (index 0, 1600 MHz here). Combined with MODE=floor the floor never
 # leaves the top of the ladder, for every app and every screen state. Use the preset:
-#     gpufix.sh preset max      # floor = 1600 MHz always (pinned, max battery drain)
+#     gpufix.sh preset max      # floor AND ceiling = 1600 MHz always (pinned)
 #     gpufix.sh preset boost    # 390 idle -> 1200 busy (default)
 #     gpufix.sh preset stock    # release everything (stock behaviour)
 # Above TEMP_MAX battery temperature the floor drops to HOT_HZ (default MIN_HZ) until
 # the phone cools, so a hot game session cannot sit at the ceiling indefinitely.
+#
+# THE LADDER MAY BE UNREADABLE: on some GSI/vendor combinations /proc/gpufreqv2 is
+# denied to the shell even as root (the vendor power HAL keeps its own label). Index 0
+# is the driver's own name for the fastest OPP and 0 is also what custom_upbound_gpu_freq
+# wants, so 'preset max' still works: it writes index 0 to the floor and ceiling nodes and
+# marks itself OFFLINE in the log. OFFLINE mode cannot tell 390 from 1600 by reading the
+# ladder, so the thermal brake writes index TOP_INDEX (default 44 = slowest OPP, which is
+# what the floor is at idle anyway) - override TOP_INDEX if your ladder differs.
 #
 # Two copies exist by design (the main patch ships it disabled, the standalone
 # GPU-DVFS-X6886 module ships it enabled with GPU_FIX/ENABLED=1); CI checks that this
@@ -62,12 +70,14 @@ STATUS=/proc/gpufreqv2/gpufreq_status
 N_CUR=$GED/current_freqency
 N_UTIL=$GED/gpu_utilization
 N_BOOST=$GED/custom_boost_gpu_freq
+N_UPBOUND=$GED/custom_upbound_gpu_freq
 N_LEVELS=$GED/total_gpu_freq_level_count
 P_DVFS=$P/gpu_dvfs_enable
 P_BOOST=$P/boost_gpu_enable
 P_CUST=$P/gpu_cust_boost_freq
 P_BOTTOM=$P/gpu_bottom_freq
 P_UPBOUND=$P/gpu_cust_upbound_freq
+LADDER_OK=""        # "" = not probed yet, 1 = readable, 0 = denied to us (OFFLINE mode)
 
 # Defaults; /data/adb/fod/gpu.conf may override them (validated below).
 ENABLED=0            # 1 = start the adaptive governor at boot
@@ -79,10 +89,19 @@ HOLD_S=20            # keep TOP_HZ this long after the last busy sample
 INTERVAL=2           # loop period in seconds
 TEMP_MAX=430         # at or above this battery temperature (deci-degC) release the floor
 HOT_HZ=0             # floor while too hot; 0 = use MIN_HZ (e.g. 900000 to stay warm-but-fast)
+CEIL_HZ=1600000      # GED upper bound to publish: kHz, or 0 for the fastest OPP
+TOP_INDEX=44         # ladder index of the slowest OPP; used only when the ladder is unreadable
 SYNC_PARAM=1         # keep gpu_cust_boost_freq (module parameter) in sync with the floor
 SAMPLE_S=10          # default probe/verify window
 num_or() {   # $1 value, $2 fallback -> prints a sane non-negative integer
   case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac
+}
+num_req() {  # $1 value, $2 default -> an empty or invalid value becomes $2 (CEIL_HZ may be 0)
+  case "$1" in
+    '') printf '%s' "$2" ;;
+    *[!0-9]*) printf '%s' "$2" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 mkdir -p "$D" 2>/dev/null
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 60000 ] && mv -f "$LOG" "$LOG.old"
@@ -97,6 +116,8 @@ HOLD_S=$(num_or "$HOLD_S" 20)
 INTERVAL=$(num_or "$INTERVAL" 2)
 TEMP_MAX=$(num_or "$TEMP_MAX" 430)
 HOT_HZ=$(num_or "$HOT_HZ" 0)
+TOP_INDEX=$(num_or "$TOP_INDEX" 44)
+CEIL_HZ=$(num_req "$CEIL_HZ" 1600000)    # 0 = top OPP; empty is not allowed for the ceiling
 SYNC_PARAM=$(num_or "$SYNC_PARAM" 1)
 SAMPLE_S=$(num_or "$SAMPLE_S" 10)
 case "$MODE" in adaptive|floor|off) ;; *) MODE=adaptive ;; esac
@@ -149,14 +170,38 @@ OPPEOF
   [ -n "$R_FREQ" ] || { R_IDX=$_fast_i; R_FREQ=$_fast_f; }
   [ -n "$R_FREQ" ]
 }
+offline_top() {   # no ladder: index 0 is the driver's name for the fastest OPP
+  R_IDX=0; R_FREQ=0
+  return 0
+}
+offline_index() {   # $1 = kHz -> index via the shell-only fallback; sets R_IDX R_FREQ
+  case "$1" in
+    ''|0) offline_top; return 0 ;;
+  esac
+  if [ -n "$L_MIN" ] && [ -n "$L_MAX" ] && [ -n "$L_SLOW" ] && [ "$1" -ge "$L_MAX" ]; then
+    offline_top; return 0
+  fi
+  if [ -n "$L_MIN" ] && [ -n "$L_SLOW" ] && [ "$1" -le "$L_MIN" ]; then
+    R_IDX=$L_SLOW; R_FREQ=$L_MIN; return 0
+  fi
+  return 1            # anything in between needs the real ladder
+}
+ladder_available() {   # remember once whether the kernel ladder can be read at all
+  if [ -z "$LADDER_OK" ]; then
+    if opp_lines >/dev/null 2>&1; then LADDER_OK=1; else LADDER_OK=0; fi
+  fi
+  [ "$LADDER_OK" = 1 ]
+}
 # --- end GPU OPP / node helpers ---
 
 # --- preset helpers (regression-tested by .github/tests/test_fixes.py) ---
-preset_values() {   # $1 preset name -> "mode top_hz load_on hold_s interval" or empty
+preset_values() {   # $1 preset -> "mode top_hz load_on hold_s interval ceil"; ceil 0 = top OPP
+  # The ceiling is expressed as the ladder-agnostic 0 ("fastest OPP"), so a maxed preset
+  # works even where /proc/gpufreqv2 is denied to us. "" leaves the ceiling alone.
   case "$1" in
-    stock) printf '%s\n' "off 390000 60 0 2" ;;
-    boost) printf '%s\n' "adaptive 1200000 60 20 1" ;;
-    max)   printf '%s\n' "floor 0 60 20 1" ;;
+    stock) printf '%s\n' "off 390000 60 0 2 " ;;
+    boost) printf '%s\n' "adaptive 1200000 60 20 1 " ;;
+    max)   printf '%s\n' "floor 0 60 20 1 0" ;;
     *) return 1 ;;
   esac
 }
@@ -225,8 +270,17 @@ snapshot() {   # keep the pre-change values once; never overwrite a real snapsho
     printf 'boost_gpu_enable=%s\n' "$(node_val "$P_BOOST")"
     printf 'gpu_cust_boost_freq=%s\n' "$(node_val "$P_CUST")"
     printf 'custom_boost_gpu_freq=%s\n' "$(node_val "$N_BOOST")"
+    printf 'custom_upbound_gpu_freq=%s\n' "$(node_val "$N_UPBOUND")"
+    printf 'gpu_cust_upbound_freq=%s\n' "$(node_val "$P_UPBOUND")"
   } > "$ORIG"
   log "snapshot $(tr '\n' ' ' < "$ORIG")"
+}
+hz_text() {   # $1 = kHz, "" -> human wording; 0 means "the top OPP" on this kernel
+  case "$1" in
+    0) printf 'the top OPP' ;;
+    '') printf 'unknown' ;;
+    *) printf '%s kHz' "$1" ;;
+  esac
 }
 floor_freq() {   # prints the kHz of the OPP currently written to custom_boost_gpu_freq
   _fi=$(node_val "$N_BOOST")
@@ -235,14 +289,18 @@ floor_freq() {   # prints the kHz of the OPP currently written to custom_boost_g
 }
 floor_to() {   # $1 = kHz; moves the GED boost floor (index) and optionally the parameter
   # exit codes: 0 = written, 2 = already there, 1 = failed
-  resolve_opp "$1" || return 1
+  if ! ladder_available; then
+    offline_index "$1" || return 1
+  elif ! resolve_opp "$1"; then
+    return 1
+  fi
   _cur=$(node_val "$N_BOOST")
   if [ "$_cur" = "$R_IDX" ]; then
     if [ "$SYNC_PARAM" != 1 ] || [ "$(node_val "$P_CUST")" = "$R_FREQ" ]; then return 2; fi
   fi
   snapshot
   write_node "$N_BOOST" "$R_IDX" || return 1
-  if [ "$SYNC_PARAM" = 1 ]; then write_node "$P_CUST" "$R_FREQ"; fi
+  if [ "$SYNC_PARAM" = 1 ] && [ -n "$R_FREQ" ] && [ "$R_FREQ" != 0 ]; then write_node "$P_CUST" "$R_FREQ"; fi
   [ "$(node_val "$P_BOOST")" = 1 ] || write_node "$P_BOOST" 1
   return 0
 }
@@ -261,15 +319,33 @@ status() {
     _pw=$(plan_now)
     _pt=${_pw% *}; _pr=${_pw#* }
     if resolve_opp "$_pt"; then
-      say "plan:  load ${_lvl_load:-?}% / mode $MODE / ${_pr} -> level $R_IDX ($R_FREQ kHz)"
+      say "plan:  load ${_lvl_load:-?}% / mode $MODE / ${_pr} -> level $R_IDX ($(hz_text "$R_FREQ"))"
       [ "$R_FREQ" -ge "$L_MAX" ] && say "pin:   floor = ceiling = $R_FREQ kHz; the GPU cannot scale down on its own."
     fi
     _ff=$(floor_freq)
     [ -n "$_ff" ] && say "asked: level $(node_val "$N_BOOST") = $_ff kHz (module floor)"
   else
-    say "opp:   ladder not readable ($TABLES) - apply refused"
+    say "opp:   ladder not readable ($TABLES) - middle-of-ladder writes unavailable"
+    say "       (top-OPP/slowest-OPP writes still work: preset max / preset stock)"
   fi
   _dv=$(node_val "$P_DVFS"); _ceiling=$(limits | sed -n 's/.*C=\([0-9]*\).*/\1/p')
+  _ub=$(node_val "$P_UPBOUND"); _ubi=$(node_val "$N_UPBOUND")
+  [ "$_ubi" = 0 ] && [ -z "$L_MAX" ] && _ub=""   # offline: the kHz behind index 0 is unknown
+  if [ -n "$_ub" ] && [ "$_ubi" = 0 ]; then
+    say "ceil:  upper bound hal index 0 = the top OPP is allowed"
+  elif [ -n "$_ub" ]; then
+    if [ -n "$L_MAX" ] && [ "$_ub" = "$L_MAX" ]; then
+      say "ceil:  upper bound $(hz_text "$_ub") (hal index $_ubi) - the top OPP is allowed"
+    else
+      say "ceil:  upper bound $(hz_text "$_ub") (hal index $_ubi) - GED will not go above this"
+    fi
+  elif [ -n "$_ubi" ]; then
+    say "ceil:  upper bound hal index $_ubi"
+  fi
+  if [ -n "$LADDER_OK" ] && [ "$LADDER_OK" = 0 ]; then
+    say "mode:  OFFLINE - /proc/gpufreqv2 is not readable to this shell, so only top-OPP"
+    say "       and slowest-OPP writes are possible; preset max still works (index 0)."
+  fi
   if [ "$_dv" != 1 ]; then
     say "verdict: gpu_dvfs_enable=$_dv - DVFS is off and the GPU is pinned. That is the real fault."
   elif [ -n "$_ceiling" ] && [ "$_ceiling" != 0 ]; then
@@ -277,8 +353,15 @@ status() {
   elif [ "$ENABLED" != 1 ]; then
     say "verdict: governor is off (ENABLED=0 in $CONF). The GPU follows GED demand only,"
     say "         which on this kernel means it sits at $L_MIN kHz almost all the time."
+  elif [ "$MODE" = floor ]; then
+    say "verdict: governor on, MODE=floor - the floor stays at $(hz_text "$TOP_HZ")."
+    say "         ceiling target: $(hz_text "$CEIL_HZ")."
+    if [ -n "$_ub" ] && { [ "$_ubi" != 0 ] && [ "$_ub" != "$L_MAX" ]; }; then
+      say "         BUT the live upper bound is $_ub kHz (hal index $_ubi): until that is the top"
+      say "         OPP, GED will not go above it. Run 'preset max' to set it."
+    fi
   else
-    say "verdict: governor on - floor moves to $TOP_HZ kHz while busy, back to $MIN_HZ kHz when idle."
+    say "verdict: governor on - floor moves to $(hz_text "$TOP_HZ") while busy, back to $(hz_text "$MIN_HZ") when idle."
   fi
   [ -f "$ORIG" ] && say "state: nodes were changed (undo: '$ME revert' or reboot)"
   if [ -f "$PIDF" ]; then
@@ -319,11 +402,17 @@ sample() {   # $1 seconds, $2 label; sets S_* and prints the numbers
   say "== $2: ${_secs}s, $_n samples"
   say "freq:  min $S_MIN  max $S_MAX  last $S_LAST  changes $S_CHANGES kHz"
   say "load:  max ${S_LOADMAX}%  mean ${_mean}%  samples with load>0: $S_LOADED/$_n"
-  FLOORF=""
+  FLOORF=""; _fni=""; _uni=""
+  if ! ladder_available; then
+    say "note:  the OPP ladder is not readable to this shell; judging by the nodes instead."
+  fi
+  if [ "$2" = verify ]; then   # one read can catch a mid-write - read again before judging
+    _fni=$(node_val "$N_BOOST"); _uni=$(node_val "$N_UPBOUND")
+  fi
   if ladder_stats; then
     say "floor: $L_MIN kHz (ladder index $L_SLOW), ceiling $L_MAX kHz"
     FLOORF=$(floor_freq)
-    [ -n "$FLOORF" ] && say "asked: level $(node_val "$N_BOOST") = $FLOORF kHz (by this module)"
+    [ -n "$FLOORF" ] && say "asked: level $(node_val "$N_BOOST") = $(hz_text "$FLOORF") (by this module)"
   fi
   SCALE_OK=""
   if [ "$S_MAX" -eq 0 ]; then
@@ -349,7 +438,19 @@ sample() {   # $1 seconds, $2 label; sets S_* and prints the numbers
       say "        Repeat inside a 3D game or benchmark."
     fi
   elif [ -z "$L_MIN" ]; then
-    say "note:  the OPP ladder is not readable ($TABLES), so the floor cannot be judged."
+    _fl=$_fni; _ub=$_uni
+    case "$_fl" in 0|'') ;; *) _fl=$(node_val "$N_BOOST") ;; esac
+    case "$_ub" in 0|'') ;; *) _ub=$(node_val "$N_UPBOUND") ;; esac
+    if [ "$_fl" = 0 ] && [ "$_ub" = 0 ]; then
+      SCALE_OK=1
+      say "result: floor and ceiling are both index 0, so a flat $S_LAST kHz is a pin at the top OPP."
+    elif [ "$_fl" = 0 ]; then
+      SCALE_OK=1
+      say "result: floor is index 0 (top OPP); ceiling index $_ub. Flat $S_LAST kHz is the pin."
+    else
+      say "note:  floor index $_fl / ceiling index $_ub - without the ladder these cannot be"
+      say "       translated to kHz. Raw nodes are in 'gpufix.sh status'."
+    fi
   else
     SCALE_OK=1
     say "result: held at $S_LAST kHz for the whole window (above the floor) - demand was met at that step."
@@ -375,35 +476,57 @@ preset() {   # $1 = stock | boost | max
   }
   _name=$1
   set -- $_vals
-  MODE=$1; TOP_HZ=$2; LOAD_ON=$3; HOLD_S=$4; INTERVAL=$5; ENABLED=1
+  MODE=$1; TOP_HZ=$2; LOAD_ON=$3; HOLD_S=$4; INTERVAL=$5; _ceil=$6; ENABLED=1
   setkey "$CONF" ENABLED 1
   setkey "$CONF" MODE "$MODE"
   setkey "$CONF" TOP_HZ "$TOP_HZ"
   setkey "$CONF" LOAD_ON "$LOAD_ON"
   setkey "$CONF" HOLD_S "$HOLD_S"
   setkey "$CONF" INTERVAL "$INTERVAL"
+  [ -n "$_ceil" ] && setkey "$CONF" CEIL_HZ "$_ceil"
   : > "$D/.gpufix.reload"   # a running governor must pick this up before we touch the node
   both "preset $_name: MODE=$MODE TOP_HZ=$TOP_HZ LOAD_ON=$LOAD_ON HOLD_S=$HOLD_S INTERVAL=$INTERVAL"
-  if ! ladder_stats; then
-    say "the OPP ladder is not readable right now; the preset is saved and applies when it is."
-    return 0
-  fi
   case "$MODE" in off) _want=$MIN_HZ ;; *) _want=$TOP_HZ ;; esac
-  resolve_opp "$_want" || return 1
-  if [ "$MODE" = floor ] && [ "$R_FREQ" -ge "$L_MAX" ]; then
-    say "note: floor = ceiling = $R_FREQ kHz. Battery drain rises; above $TEMP_MAX deci-degC"
-    say "      the floor drops to $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$MIN_HZ") kHz until it cools."
-  fi
   if ! is_root; then
     say "saved. Needs root to change the nodes now; it applies at the next tick or boot."
     return 0
   fi
+  if ladder_available; then
+    resolve_opp "$_want" || return 1
+    _lvl="$R_IDX ($R_FREQ kHz)"
+  else
+    # Index 0 is the driver's own name for the fastest OPP, so a maxed preset still works
+    # when /proc/gpufreqv2 is denied to us. Only the in-between steps need the ladder.
+    case "$_name" in
+      max) R_IDX=0; R_FREQ=0; _lvl="0 (top OPP)" ;;
+      *)   say "the OPP ladder is not readable here (denied to this shell context), and this"
+           say "preset needs a frequency in the middle of the ladder. Nothing was written."
+           say "Use 'preset max' (index 0 = fastest OPP) or 'preset stock' on this build."
+           return 1 ;;
+    esac
+  fi
+  if [ "$MODE" = floor ]; then
+    say "note: floor = the top OPP. Battery drain rises; above $TEMP_MAX deci-degC"
+    say "      the floor drops to $([ "$HOT_HZ" -gt 0 ] && echo "$HOT_HZ" || echo "$MIN_HZ") kHz until it cools."
+  elif [ "$MODE" = off ] && [ -z "$_ceil" ]; then
+    say "note: the floor is released; the GED upper bound is left where it is."
+    say "      A reboot (or '$ME revert') restores the stock ceiling too."
+  fi
   floor_to "$_want"
   case $? in
-    0) both "floor now level $R_IDX ($R_FREQ kHz)" ;;
-    2) say "floor already level $R_IDX ($R_FREQ kHz)" ;;
-    *) say "! could not move the floor"; return 1 ;;
+    0) both "floor now level $_lvl" ;;
+    2) say "floor already level $_lvl" ;;
+    *) say "! could not move the floor (custom_boost_gpu_freq reads $(node_val "$N_BOOST"))"; return 1 ;;
   esac
+  if [ "$MODE" = floor ]; then
+    CEIL_HZ=$_ceil          # 0 = top OPP, which is what 'preset max' means
+    ceil_to "$_ceil"
+    case $? in
+      0) both "ceiling now level $R_IDX ($(hz_text "$R_FREQ"))" ;;
+      2) say "ceiling already level $R_IDX ($(hz_text "$R_FREQ"))" ;;
+      *) say "! could not move the ceiling (custom_upbound_gpu_freq reads $(node_val "$N_UPBOUND"))" ;;
+    esac
+  fi
 }
 
 apply() {   # $1 = Hz for the floor, default TOP_HZ
@@ -446,6 +569,32 @@ release() {
   esac
 }
 
+ceil_to() {   # publishes GED's upper bound: index on the hal node, kHz on the parameter
+  # $1 = kHz; 0 = fastest OPP.
+  [ -n "$CEIL_HZ" ] || { say "ceiling control disabled (CEIL_HZ empty)"; return 2; }
+  _want=$1; _want=$(num_or "$_want" "")        # 0 stays 0: index 0 is the fastest OPP
+  if ! ladder_available; then
+    case "$_want" in
+      0) R_IDX=0; R_FREQ=0 ;;
+      '') say "! CEIL_HZ is not a number"; return 1 ;;
+      *)  say "! the ladder is unreadable here, so only a top OPP (CEIL_HZ=0) can be set"
+          return 1 ;;
+    esac
+  else
+    resolve_opp "$_want" || return 1
+  fi
+  _cur=$(node_val "$N_UPBOUND")
+  if [ "$_cur" = "$R_IDX" ] && [ "$(node_val "$P_UPBOUND")" = "$R_FREQ" ]; then
+    return 2
+  fi
+  snapshot
+  write_node "$N_UPBOUND" "$R_IDX" || return 1
+  # Only publish a frequency we actually know; offline we do not, and writing 0 kHz there
+  # would just be noise in the reported value. The hal index is what GED enforces.
+  [ -n "$R_FREQ" ] && [ "$R_FREQ" != 0 ] && write_node "$P_UPBOUND" "$R_FREQ" 2>/dev/null
+  return 0
+}
+
 revert() {
   is_root || { say "revert needs root"; return 1; }
   if [ ! -f "$ORIG" ]; then
@@ -460,6 +609,8 @@ revert() {
       boost_gpu_enable) _n=$P_BOOST ;;
       gpu_cust_boost_freq) _n=$P_CUST ;;
       custom_boost_gpu_freq) _n=$N_BOOST ;;
+      custom_upbound_gpu_freq) _n=$N_UPBOUND ;;
+      gpu_cust_upbound_freq) _n=$P_UPBOUND ;;
       *) continue ;;
     esac
     if write_node "$_n" "$_v"; then _ok=$((_ok + 1)); both "restored $_k=$_v"
@@ -473,6 +624,7 @@ revert() {
     say "some values did not restore; a reboot will."
   fi
   say "state: boost_gpu_enable=$(node_val "$P_BOOST") custom_boost_gpu_freq=$(node_val "$N_BOOST") gpu_cust_boost_freq=$(node_val "$P_CUST")"
+  say "       custom_upbound_gpu_freq=$(node_val "$N_UPBOUND") gpu_cust_upbound_freq=$(node_val "$P_UPBOUND")"
 }
 
 run() {   # the adaptive loop
@@ -525,6 +677,26 @@ run() {   # the adaptive loop
     else
       WANT=$(pick_target "$ST")
     fi
+    # Offline mode (ladder denied to us): use the shell-only index rules. The thermal
+    # brake writes TOP_INDEX (44 on MT6789 = slowest OPP = the idle floor) because we
+    # cannot name a mid-ladder index there - with a readable ladder HOT_HZ works fully.
+    if ! ladder_available; then
+      if [ "$REASON" = hot ]; then
+        WANT=; R_IDX=$TOP_INDEX; R_FREQ=$MIN_HZ
+      elif offline_index "$WANT"; then : ; else R_IDX=""; fi
+      if [ -n "$R_IDX" ] && { [ "$(node_val "$N_BOOST")" != "$R_IDX" ]; }; then
+        snapshot
+        if write_node "$N_BOOST" "$R_IDX" &&
+           { [ "$SYNC_PARAM" != 1 ] || [ -z "$R_FREQ" ] || [ "$R_FREQ" = 0 ] || write_node "$P_CUST" "$R_FREQ"; }; then
+          log "run(offline): floor -> level $R_IDX (${R_FREQ:-top OPP} kHz), reason ${REASON:-busy}"
+        else
+          [ $((_n % 60)) -eq 0 ] && log "run(offline): could not set level $R_IDX; node reads $(node_val "$N_BOOST")"
+        fi
+      fi
+      [ -n "$CEIL_HZ" ] && [ $((_n % 15)) -eq 0 ] && ceil_to "$CEIL_HZ" >/dev/null 2>&1
+      sleep "$INTERVAL"
+      continue
+    fi
     # Always go through floor_to(): it re-reads the node, so a vendor power HAL that
     # rewrites custom_boost_gpu_freq gets corrected on the next tick (exit 2 = no write).
     if resolve_opp "$WANT"; then
@@ -541,6 +713,7 @@ run() {   # the adaptive loop
         log "run: could not set level $R_IDX ($R_FREQ kHz); node reads $(node_val "$N_BOOST")"
       fi
     fi
+    [ -n "$CEIL_HZ" ] && [ $((_n % 15)) -eq 0 ] && ceil_to "$CEIL_HZ" >/dev/null 2>&1
     sleep "$INTERVAL"
   done
 }

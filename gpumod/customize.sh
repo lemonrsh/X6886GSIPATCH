@@ -31,6 +31,8 @@ HOLD_S=20            # keep the floor up this long after the last busy sample
 INTERVAL=1           # governor period in seconds
 HOT_HZ=0             # floor while above TEMP_MAX; 0 = MIN_HZ
 TEMP_MAX=430         # >= this battery temperature (deci-degC) lowers the floor
+CEIL_HZ=1600000      # GED upper bound published by the governor; 0 = the fastest OPP
+TOP_INDEX=44         # slowest OPP index, used only when /proc/gpufreqv2 is unreadable
 SYNC_PARAM=1         # keep gpu_cust_boost_freq in sync with the floor
 CONF
 fi

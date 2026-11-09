@@ -40,11 +40,16 @@ sh $M/gpufix.sh probe 20              # use the phone normally while it runs
 su -c "sh $M/gpufix.sh revert"        # undo the nodes (a reboot does too)
 ```
 
-| preset | floor | note |
-| --- | --- | --- |
-| `max` | 1600 MHz always (`TOP_HZ=0`, `MODE=floor`) | floor == ceiling, GPU cannot idle down |
-| `boost` | 1200 MHz while busy, 390 idle | follows `gpu_utilization`, holds 20 s |
-| `stock` | 390 MHz | nothing raised |
+| preset | floor | ceiling | note |
+| --- | --- | --- | --- |
+| `max` | top OPP (`TOP_HZ=0`, `MODE=floor`) | top OPP (`CEIL_HZ=0`) | floor == ceiling, GPU cannot idle down |
+| `boost` | 1200 MHz while busy, 390 idle | unchanged | follows `gpu_utilization`, holds 20 s |
+| `stock` | 390 MHz | unchanged | nothing raised |
+
+If `/proc/gpufreqv2/*` is unreadable to the shell (some GSIs deny it even to root),
+`preset max` still works: it writes index 0 (the driver's name for the fastest OPP) to
+both nodes, and the thermal brake drops the floor to `TOP_INDEX` (default 44 = slowest
+OPP) at `TEMP_MAX`. `preset boost` needs the ladder and will refuse rather than guess.
 
 Above `TEMP_MAX` (43 C battery) the floor drops to `HOT_HZ` (default 0 = stock floor)
 until the phone cools; set `HOT_HZ=900000` to stay fast-but-safe instead. The loop
@@ -56,6 +61,9 @@ Remove the module in Magisk to stop it; `uninstall.sh` also restores the nodes.
 
 * The vendor power HAL is free to rewrite `custom_boost_gpu_freq`; if that happens the
   governor simply sets it back on the next tick (that is what the loop is for).
+* Where `/proc/gpufreqv2/*` is denied, `gpu_cust_boost_freq` / `gpu_cust_upbound_freq`
+  are left holding their old kHz values while the enforced hal indices are 0. GED obeys
+  the index, so this only affects the *reported* numbers, never the clock.
 * This is still a *floor*: if the GPU never leaves 390 MHz even with the floor raised,
   the cap is elsewhere (firmware `[PPM Ceiling]`, thermal policy) and no write to these
   nodes will help. `gpufix.sh verify` is the honest test.
