@@ -620,6 +620,32 @@ if cpu_busy; then echo busy; else echo quiet; fi
                 self.assertEqual(outs[0], outs[1], "bash and dash disagree")
                 self.assertEqual(outs[0], name)
 
+    def test_documented_commands_exist(self):
+        """Every command the output tells the user to run must be dispatched."""
+        src = read("gpufix.sh")
+        words = set()
+        for line in src.splitlines():
+            match = re.match(r"^  ([^ ()]+)\) ", line)
+            if not match:
+                continue
+            for word in match.group(1).split("|"):
+                words.add(word.strip().strip("'"))
+        for cmd in ("status", "probe", "verify", "apply", "ceil", "release", "preset",
+                    "choose", "run", "revert", "boot", "help"):
+            with self.subTest(cmd=cmd):
+                self.assertIn(cmd, words, f"'$ME {cmd}' is not dispatched")
+        self.assertRegex(src, r"(?m)^  help\|", "help is not dispatched")
+        # and each advice string must name a real command word
+        for advice in re.findall(r"'\$ME ([a-z]+)", src):
+            self.assertIn(advice, src, f"advice mentions '$ME {advice}'")
+
+    def test_release_uses_sleep_hz_and_needs_no_ladder(self):
+        """release must drop to the lowest OPP ('390') and work where /proc is denied."""
+        src = read("gpufix.sh")
+        block = re.search(r"^release\(\) \{.*?^\}", src, re.S | re.M).group(0)
+        self.assertIn('floor_to "$SLEEP_HZ"', block)
+        self.assertNotIn("ladder_stats ||", block, "release must not require the ladder")
+
     def test_safer_lifts_the_ged_upper_bound(self):
         """Regression: 'safer' left the stock 1100000 ceiling in place, so the GPU never
         passed 1100 MHz no matter what the floor asked for."""

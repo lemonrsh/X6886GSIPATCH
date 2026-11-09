@@ -42,6 +42,9 @@ su -c "sh $M/gpufix.sh preset safer"  # recommended: top OPP on load, lowest OPP
 su -c "sh $M/gpufix.sh preset max"    # fastest OPP always, whole system (pinned)
 su -c "sh $M/gpufix.sh preset stock"  # release the floor
 sh $M/gpufix.sh status                # state, live load, floor asked for, plan
+su -c "sh $M/gpufix.sh ceil 0"        # publish the top OPP on GED's upper bound (repairs 1100 MHz)
+su -c "sh $M/gpufix.sh release"       # floor to the lowest OPP (390) - works without /proc
+sh $M/gpufix.sh help                  # every command
 sh $M/gpufix.sh probe 20              # use the phone normally while it runs
 su -c "sh $M/gpufix.sh revert"        # undo the nodes (a reboot does too)
 ```

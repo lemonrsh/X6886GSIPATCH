@@ -48,6 +48,7 @@ GPU (v11.7, optional): the installer asks with the volume keys -
   CEILING: safer also lifts GED's upper bound (CEIL_HZ=0 = top OPP). Without that the stock
   1100000 cap keeps the GPU at 1100 MHz no matter what the floor asks for. If 'status'
   reports 'the ceiling is CAPPING the GPU', re-run 'preset safer' or 'ceil 0'.
+  Commands: status | probe | verify | apply | ceil [hz|0] | release | preset | revert | help
 "max" pins floor = ceiling = the top OPP (1600 MHz): maximum performance with the
 battery and heat cost that implies; above 43 C battery the floor drops to HOT_HZ (default
 stock) until the phone cools. It works even when /proc/gpufreqv2 is denied to the shell:
