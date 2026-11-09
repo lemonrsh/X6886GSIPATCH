@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh v11.6 FIX
-version=v11.6
-versionCode=118
+name=X6886 GSI PATCH by lemonrsh v11.7 FIX
+version=v11.7
+versionCode=119
 author=lemonrsh
-description=X6886 GSI patch v11.6: GPU governor with a SAFER profile (volume-key choice at install: whole-system top OPP on load, lowest OPP screen-off) and MAX (pinned top OPP); single 50 C thermal limit; works where /proc/gpufreqv2 is denied. On top of the v11.2.2 HBM watchdog, FOD/SOFOD guards and AOD-aware dexopt; DT2W removed.
+description=X6886 GSI patch v11.7: GPU governor, volume-key choice at install. SAFER: 790 MHz rest, 1600 MHz on any GPU or CPU (UI) work, 390 MHz screen-off. MAX: pinned at 1600. Single 50 C thermal limit for both; works where /proc/gpufreqv2 is denied. On top of the v11.2.2 HBM watchdog, FOD/SOFOD guards and AOD-aware dexopt; DT2W removed.

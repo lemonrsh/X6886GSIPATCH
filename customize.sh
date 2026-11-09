@@ -85,10 +85,13 @@ cat > "$DATA/fod/gpu.conf" <<'CONF'
 # governor install the separate GPU-DVFS-X6886 module instead.
 ENABLED=0            # 1 = start the governor at boot (0 = never touch the GPU nodes)
 MODE=safer           # safer (screen-aware) | adaptive | floor (always max) | off (always stock)
-MIN_HZ=390000        # floor while idle, and always while the screen is off
-SCREEN_OFF_MIN=1     # safer only: 1 = lowest OPP whenever the screen is off
-BAT_MIN=15           # safer only: below this battery % (not charging) do not raise the floor
-TOP_HZ=0             # floor used while busy: 0 = the fastest OPP (1600 MHz), whole system
+MIN_HZ=790000        # rest floor while in use (safer); 'preset max' resets it to 390000
+SLEEP_HZ=390000      # floor while the screen is off, hot or nearly empty (lowest OPP)
+SCREEN_OFF_MIN=1     # 1 = SLEEP_HZ whenever the screen is off (recommended)
+BAT_MIN=15           # below this battery % (not charging) do not raise the floor
+CPU_ON=60            # safer: CPU busy % that also raises the floor (the UI, not just games)
+SAFE_INDEX=          # ladder index of MIN_HZ when /proc is unreadable; preset fills it
+TOP_HZ=0             # floor while the UI/GPU is busy; 0 = the fastest OPP (1600 MHz)
 LOAD_ON=60           # mode=adaptive only: gpu_utilization load % counted as busy
 HOLD_S=20            # mode=adaptive only: keep the floor up this long after the last busy sample
 INTERVAL=1           # governor period in seconds
@@ -125,6 +128,9 @@ addkey "$DATA/fod/gpu.conf" TOP_INDEX 44
 addkey "$DATA/fod/gpu.conf" TOP_HZ 0
 addkey "$DATA/fod/gpu.conf" SCREEN_OFF_MIN 1
 addkey "$DATA/fod/gpu.conf" BAT_MIN 15
+addkey "$DATA/fod/gpu.conf" SLEEP_HZ 390000
+addkey "$DATA/fod/gpu.conf" CPU_ON 60
+addkey "$DATA/fod/gpu.conf" SAFE_INDEX ""
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling
 addkey "$DATA/fod/dlfix.conf" ADAPTIVE 1

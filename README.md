@@ -1,62 +1,63 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## v11.6 SAFER preset + volume-key profile choice
+## v11.7 SAFER: 790 MHz rest, 1600 on any UI work, 390 asleep
 
-Two profiles, both of which boost the GPU for the **whole system** (not just games). The
-installer asks for one with the volume keys:
+`safer` now runs a **three-step** policy and it is driven by the CPU as well as the GPU, so
+the whole UI benefits, not just games.
 
-```
-VOLUME UP    SAFER   recommended
-VOLUME DOWN  MAX     pinned at the top OPP, always
-no press     SAFER   (an unattended flash never changes GPU behaviour)
-```
+| state | floor | why |
+| --- | --- | --- |
+| anything at all is happening (GPU **or** CPU busy) | **1600 MHz** | the UI is composited on the CPU: scrolling, app switching, dialogs, video |
+| idle, screen on | **790 MHz** | responsive rest floor instead of the old 390 |
+| screen off | **390 MHz** | nothing on screen needs the GPU |
+| battery ≥ 50 °C, or < 15 % unplugged | **390 MHz** | safety release |
 
-Both flavours are also one command away at any time:
+It reaches 1600 within one 1 s sample (`LOAD_ON=25`, `CPU_ON=60`), holds `HOLD_S=6` after
+the last busy sample, then settles back to 790. Both profiles keep the **same 50 °C thermal
+limit** — nothing is throttled below it, and at 50 °C the floor drops all the way to 390 MHz
+until the phone cools.
 
 ```sh
 M=/data/adb/modules/gpu_dvfs_x6886       # or .../X6886_GSI_PATCH_level_1_by_lemonrsh
-su -c "sh $M/gpufix.sh preset safer"     # recommended: whole-system boost, releases when idle
+su -c "sh $M/gpufix.sh preset safer"     # recommended
 su -c "sh $M/gpufix.sh preset max"       # pinned: floor = ceiling = 1600 MHz, always
-su -c "sh $M/gpufix.sh preset stock"     # let go of everything (stock behaviour)
+su -c "sh $M/gpufix.sh preset stock"     # let go of everything
 ```
 
 | | `safer` | `max` |
 | --- | --- | --- |
-| while the GPU is busy (any app) | **top OPP** (1600 MHz) within 1 s | top OPP, always |
-| while the GPU is idle | lowest OPP (390 MHz) | top OPP |
-| screen off | **lowest OPP, always** | top OPP |
-| battery at/above `TEMP_MAX` | lowest OPP until it cools | lowest OPP until it cools |
-| battery below `BAT_MIN` and not charging | lowest OPP | (same) |
-| heat / drain | normal | high, sustained |
+| idle, screen on | 790 MHz | 1600 MHz |
+| GPU or CPU busy | 1600 MHz (within 1 s) | 1600 MHz |
+| screen off | 390 MHz | 1600 MHz |
+| at 50 °C | 390 MHz until cool | 390 MHz until cool |
+| heat / drain | low | high, sustained |
 
-`safer` (`MODE=safer`) is the middle ground you asked for: it is never pinned at 1600 MHz
-and never parked at 390 MHz while something needs the GPU — it jumps to the top OPP within
-one sample of real load, holds `HOLD_S` seconds after the last busy sample, and drops back.
-With the screen off it always sits at the **lowest** OPP, because nothing on screen needs
-the GPU.
+The installer asks with the volume keys: **VOLUME UP = SAFER**, **VOLUME DOWN = MAX**, no
+press = SAFER. `max` and `stock` reset `MIN_HZ`/`SLEEP_HZ` to 390, so switching profiles never
+inherits the safer rest floor.
 
-### Thermal limit: nothing below 50 °C
-
-`TEMP_MAX=500` (deci-degC = **50 °C** battery) is the only throttle point. Below it nothing
-is throttled — 43 °C, 49 °C, no easing, no half measures. At or above 50 °C the floor drops
-to `HOT_HZ` (default `0` = `MIN_HZ`, the lowest OPP) and stays there until the phone cools.
-Installs that still carry the old `TEMP_MAX=430` are migrated to 500 by the installer;
-you can change it in `gpu.conf` at any time.
+### Knobs
 
 | config | default | meaning |
 | --- | --- | --- |
 | `MODE` | `safer` | `safer` \| `adaptive` \| `floor` \| `off` |
-| `TEMP_MAX` | `500` | the only throttle point: 50 °C battery |
-| `HOT_HZ` | `0` | floor at/above `TEMP_MAX`; `0` = `MIN_HZ` |
-| `SCREEN_OFF_MIN` | `1` | `safer`: lowest OPP whenever the screen is off |
-| `BAT_MIN` | `15` | `safer`: below this % (not charging) do not raise the floor |
-| `CEIL_HZ` | `1600000` | GED upper bound to publish; `0` = fastest OPP |
-| `TOP_INDEX` | `44` | slowest OPP, used only when the ladder is unreadable |
+| `MIN_HZ` | `790000` | safer rest floor while in use |
+| `SLEEP_HZ` | `390000` | floor for screen off / hot / low battery |
+| `TOP_HZ` | `0` | busy floor; `0` = the fastest OPP (1600 MHz) |
+| `CPU_ON` | `60` | CPU busy % that also raises the floor (raise it towards 100 for GPU-only) |
+| `LOAD_ON` | `25` | GPU load % counted as busy (safer preset) |
+| `HOLD_S` | `6` | how long the top OPP is kept after the last busy sample |
+| `TEMP_MAX` | `500` | the **only** throttle point: 50 °C battery |
+| `HOT_HZ` | `0` | floor at/above `TEMP_MAX`; `0` = `SLEEP_HZ` |
+| `SCREEN_OFF_MIN` | `1` | safer: use `SLEEP_HZ` whenever the screen is off |
+| `BAT_MIN` | `15` | safer: below this % (not charging) use `SLEEP_HZ` |
+| `SAFE_INDEX` | auto | ladder index of `MIN_HZ` when `/proc/gpufreqv2` is unreadable |
 
-`status` shows `screen=on/off`, `screen_off_min`, `bat_min` and `charging` while `safer` is
-active, and `safer` / `max` / `stock` all work even where `/proc/gpufreqv2` is unreadable
-(`boost` is the only one that needs the ladder, and it refuses instead of guessing).
+`status` prints `idle=`, `busy=`, `sleep=`, `screen=`, `cpu_on=` and `charging=` while
+`safer` is active, so the live decision is visible. Where `/proc/gpufreqv2` is denied,
+`MIN_HZ` falls back to `SAFE_INDEX` (auto-filled to 43 = one step above the lowest OPP if
+the ladder was never readable) and everything else still works.
 
 ## v11.5 GPU presets that also work on locked-down /proc
 

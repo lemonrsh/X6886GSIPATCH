@@ -454,7 +454,7 @@ set -eu
         return out[0]
 
     def test_preset_values(self):
-        self.assertEqual(self.run_block('preset_values safer').split(), ["safer", "0", "45", "15", "1"])
+        self.assertEqual(self.run_block('preset_values safer').split(), ["safer", "0", "25", "6", "1"])
         self.assertEqual(self.run_block('preset_values max').split(), ["floor", "0", "60", "20", "1", "0"])
         self.assertEqual(self.run_block('preset_values boost').split(), ["adaptive", "1200000", "60", "20", "1"])
         self.assertEqual(self.run_block('preset_values stock').split(), ["off", "390000", "60", "0", "2"])
@@ -537,14 +537,14 @@ class GpuSaferModeTests(unittest.TestCase):
             "# --- end screen/charging helpers ---",
         )
 
-    def policy(self, sticky, screen, hot=0, lowb=0, min_hz=390000, top_hz=0,
-               hot_hz=0, screen_off_min=1):
+    def policy(self, sticky, screen, hot=0, lowb=0, cpu=0, min_hz=790000, top_hz=1600000,
+               sleep_hz=390000, hot_hz=0, screen_off_min=1, cpu_on=60):
         script = f"""
 set -eu
-MIN_HZ={min_hz}; TOP_HZ={top_hz}; HOT_HZ={hot_hz}
-SCREEN_OFF_MIN={screen_off_min}; BAT_MIN=15
+MIN_HZ={min_hz}; TOP_HZ={top_hz}; SLEEP_HZ={sleep_hz}; HOT_HZ={hot_hz}
+SCREEN_OFF_MIN={screen_off_min}; BAT_MIN=15; CPU_ON={cpu_on}
 {self.block()}
-floor_policy {sticky} 0 {screen} {hot} {lowb}
+floor_policy {sticky} 0 {screen} {hot} {lowb} {cpu}
 """
         out = []
         for shell in SHELLS:
@@ -554,17 +554,23 @@ floor_policy {sticky} 0 {screen} {hot} {lowb}
         self.assertEqual(out[0], out[1], "bash and dash disagree")
         return out[0]
 
+    def test_the_idle_floor_is_790_and_load_reaches_1600(self):
+        # idle, screen on -> the 790 MHz rest floor; busy -> the full 1600 MHz
+        self.assertEqual(self.policy(0, 1), "790000 idle")
+        self.assertEqual(self.policy(1, 1), "1600000 busy")
+
+    def test_cpu_busy_alone_raises_the_floor(self):
+        # The UI costs CPU, not GPU: a busy CPU must be enough on its own.
+        self.assertEqual(self.policy(0, 1, cpu=1), "1600000 busy")
+        # CPU_ON is a load threshold, not a switch: 0 means "any CPU use counts", so the
+        # floor still stays put when nothing at all is running.
+        self.assertEqual(self.policy(0, 1, cpu=0, cpu_on=0), "790000 idle")
+
     def test_screen_off_always_drops_to_the_lowest_opp(self):
-        # Even under full load, a dark screen means the lowest OPP.
         self.assertEqual(self.policy(1, 0), "390000 screen-off")
-        self.assertEqual(self.policy(1, 0, top_hz=1600000), "390000 screen-off")
+        self.assertEqual(self.policy(1, 0, cpu=1), "390000 screen-off")
 
-    def test_busy_and_idle_on_screen(self):
-        self.assertEqual(self.policy(1, 1), "0 busy")
-        self.assertEqual(self.policy(0, 1), "390000 idle")
-        self.assertEqual(self.policy(1, 1, top_hz=1200000), "1200000 busy")
-
-    def test_hot_and_low_battery_release_before_load(self):
+    def test_hot_and_low_battery_release_to_sleep_hz(self):
         self.assertEqual(self.policy(1, 1, hot=1), "390000 hot")
         self.assertEqual(self.policy(1, 1, hot=1, hot_hz=900000), "900000 hot")
         self.assertEqual(self.policy(1, 1, lowb=1), "390000 low-battery")
@@ -572,22 +578,36 @@ floor_policy {sticky} 0 {screen} {hot} {lowb}
     def test_screen_off_wins_over_hot(self):
         self.assertEqual(self.policy(1, 0, hot=1), "390000 screen-off")
 
-    def test_nothing_is_throttled_below_fifty_celsius(self):
-        """43 C and 49 C keep the full floor; only >= 50 C throttles."""
+    def test_screen_off_can_be_disabled(self):
+        self.assertEqual(self.policy(1, 1, cpu=1, screen_off_min=0), "1600000 busy")
+
+    def test_cpu_busy_reads_proc_stat(self):
+        """cpu_busy must measure real occupancy from two /proc/stat samples."""
         block = marked_block(
             read("gpufix.sh"),
-            "# --- thermal limit helper (regression-tested by .github/tests/test_fixes.py) ---",
-            "# --- end thermal limit helper ---",
-        )
-        results = []
-        for temp in (300, 380, 430, 490, 499, 500, 520):
+            "# --- screen/charging helpers (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end screen/charging helpers ---",
+        ).replace("/proc/stat", '"$STATF"')
+        cases = {
+            # two samples, 100 ticks apart, 90 of them idle -> ~10% busy -> quiet
+            "quiet": ("cpu  10 0 10 90 0 0 0 0 0 0", "cpu  12 0 11 185 1 0 0 0 0 0"),
+            # 100 ticks apart, 10 idle -> 90% busy -> busy
+            "busy": ("cpu  70 0 20 10 0 0 0 0 0 0", "cpu  165 0 40 15 2 0 0 0 0 0"),
+        }
+        for name, (first, second) in cases.items():
             with tempfile.TemporaryDirectory() as td:
-                tp = pathlib.Path(td) / "temp"
-                tp.write_text(f"{temp}\n")
+                f = pathlib.Path(td) / "stat"
+                f.write_text(first + "\n" + second + "\n")
+                # Each read() call must return the NEXT /proc/stat sample, like the real file.
                 script = f"""
-TEMP_MAX=500
-{block.replace('/sys/class/power_supply/battery/temp', str(tp))}
-if hot; then echo throttled; else echo full; fi
+set -eu
+CPU_ON=60; CPU_SAMPLE_S=0
+sleep() {{ :; }}
+STATF={str(f)!r}
+_N=0
+read() {{ _N=$((_N + 1)); _line=$(sed -n "${{_N}}p" "$STATF"); }}
+{block}
+if cpu_busy; then echo busy; else echo quiet; fi
 """
                 outs = []
                 for shell in SHELLS:
@@ -595,14 +615,7 @@ if hot; then echo throttled; else echo full; fi
                     self.assertEqual(r.returncode, 0, r.stderr)
                     outs.append(r.stdout.strip())
                 self.assertEqual(outs[0], outs[1], "bash and dash disagree")
-                results.append(outs[0])
-        self.assertEqual(
-            results,
-            ["full", "full", "full", "full", "full", "throttled", "throttled"],
-        )
-
-    def test_screen_off_can_be_disabled(self):
-        self.assertEqual(self.policy(1, 1, screen_off_min=0), "0 busy")
+                self.assertEqual(outs[0], name)
 
     def test_volume_keys_map_to_the_two_profiles(self):
         block = marked_block(

@@ -1,3 +1,23 @@
+v11.7 (2026-11-09) - safer goes three-step and watches the CPU too
+* MODE=safer is now 790 MHz rest -> 1600 MHz on the slightest UI work -> 390 MHz asleep:
+  MIN_HZ=790000 is the while-in-use rest floor, SLEEP_HZ=390000 is used for screen-off,
+  >= 50 C and < BAT_MIN, so neither end is lost.
+* "whole UI, not only games": safer also samples /proc/stat. Any CPU occupancy at or above
+  CPU_ON=60 % raises the floor to the top OPP exactly like GPU load does, because the UI
+  is composited on the CPU and scrolling/app switching never loads the GPU enough for
+  gpu_utilization to cross LOAD_ON. A dark screen never triggers the CPU path.
+* Safer preset timings: LOAD_ON=25, HOLD_S=6 (raise fast, settle fast).
+* Both profiles keep ONE thermal limit: TEMP_MAX=500 (50 C). Nothing is throttled below
+  it; at 50 C the floor drops to SLEEP_HZ (390) for safer AND max, which previously kept
+  its new rest floor.
+* 'preset max' / 'preset stock' reset MIN_HZ and SLEEP_HZ to 390, so switching profiles
+  never inherits the safer 790 MHz rest floor.
+* FIXED: 'preset safer' briefly resolved its busy target from the rest floor (TOP_HZ was
+  written as 790000 instead of 0), and the running loop did not reload SLEEP_HZ/CPU_ON/
+  SAFE_INDEX from gpu.conf.
+* Tests: 37 host cases, now incl. the CPU trigger, the 790/1600/390 precedence and the
+  /proc/stat maths under both shells.
+
 v11.6 (2026-11-09) - SAFER preset, volume-key profile choice, single 50 C limit
 * NEW MODE=safer + 'preset safer' (now the recommended one): the whole system - not just
   games - gets the top OPP within one sample of real GPU load, holds it HOLD_S seconds

@@ -25,10 +25,13 @@ cat > "$CFG" <<'CONF'
 #          sh gpufix.sh preset stock  (release everything)
 ENABLED=1            # 0 = install but do nothing
 MODE=safer           # safer (screen-aware) | adaptive | floor (always max) | off (always stock)
-MIN_HZ=390000        # floor while idle, and always while the screen is off
-SCREEN_OFF_MIN=1     # 1 = lowest OPP whenever the screen is off (recommended)
+MIN_HZ=790000        # rest floor while in use (safer); 'preset max' resets it to 390000
+SLEEP_HZ=390000      # floor while the screen is off, hot or nearly empty (lowest OPP)
+SCREEN_OFF_MIN=1     # 1 = SLEEP_HZ whenever the screen is off (recommended)
 BAT_MIN=15           # below this battery % (not charging) do not raise the floor
-TOP_HZ=0             # floor while busy; 0 = the fastest OPP (1600 MHz)
+CPU_ON=60            # safer: CPU busy % that also raises the floor (the UI, not just games)
+SAFE_INDEX=          # ladder index of MIN_HZ when /proc is unreadable; preset fills it
+TOP_HZ=0             # floor while the UI/GPU is busy; 0 = the fastest OPP (1600 MHz)
 LOAD_ON=60           # gpu_utilization load %, at or above this counts as busy
 HOLD_S=20            # keep the floor up this long after the last busy sample
 INTERVAL=1           # governor period in seconds
@@ -46,6 +49,13 @@ if grep -q '^TEMP_MAX=430$' "$CFG" 2>/dev/null; then
   ui_print "- gpu.conf: TEMP_MAX 430 -> 500 (throttle only at 50 C)"
 fi
 grep -q '^TEMP_MIN=' "$CFG" 2>/dev/null && sed -i '/^TEMP_MIN=/d' "$CFG"
+# v1.3.1: a safer install rests at 790 MHz and only sleeps at 390.
+if [ "$(sed -n 's/^MODE=//p' "$CFG" | head -n 1)" = safer ]; then
+  grep -q '^MIN_HZ='  "$CFG" || echo 'MIN_HZ=790000'  >> "$CFG"
+  grep -q '^SLEEP_HZ=' "$CFG" || echo 'SLEEP_HZ=390000' >> "$CFG"
+  grep -q '^CPU_ON='   "$CFG" || echo 'CPU_ON=60'     >> "$CFG"
+  sed -i 's/^MIN_HZ=390000$/MIN_HZ=790000/' "$CFG"
+fi
 
 if [ ! -w /sys/kernel/ged/hal/custom_boost_gpu_freq ]; then
   ui_print "! /sys/kernel/ged/hal/custom_boost_gpu_freq is missing or read-only."

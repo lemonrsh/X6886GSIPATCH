@@ -23,9 +23,11 @@ The ceiling (`gpu_cust_upbound_freq` 1600 MHz) and `gpu_dvfs_enable` are never t
 so inside the window the GPU still scales by demand and still idles at 390 MHz.
 
 The governor samples `/sys/kernel/ged/hal/gpu_utilization` every `INTERVAL` s, raises the
-floor when load >= `LOAD_ON` %, and holds it for `HOLD_S` s. In `MODE=safer` it also drops
-to the lowest OPP whenever the screen is off. It throttles only at/above `TEMP_MAX` (50 C
-battery) and works even where `/proc/gpufreqv2` is unreadable.
+floor when load >= `LOAD_ON` %, and holds it for `HOLD_S` s. In `MODE=safer` it also reads
+`/proc/stat` and treats a CPU-loaded system (>= `CPU_ON` %) as busy too, so scrolling and
+app switching - not just games - reach 1600 MHz; with the screen off it always drops to
+`SLEEP_HZ` (390 MHz). It throttles only at/above `TEMP_MAX` (50 C battery) and works even
+where `/proc/gpufreqv2` is unreadable.
 
 ### Install / configure
 
@@ -46,7 +48,7 @@ su -c "sh $M/gpufix.sh revert"        # undo the nodes (a reboot does too)
 
 | preset | mode | floor | ceiling | note |
 | --- | --- | --- | --- | --- |
-| `safer` | `safer` | top OPP while busy, **lowest OPP when the screen is off** | unchanged | recommended: whole-system boost, no pinned floor |
+| `safer` | `safer` | **790 MHz rest, 1600 MHz on any GPU *or* CPU work, 390 screen-off** | unchanged | recommended: whole UI stays fast, nothing pinned |
 | `max` | `floor` | top OPP (`TOP_HZ=0`) | top OPP (`CEIL_HZ=0`) | floor == ceiling, GPU cannot idle down |
 | `boost` | `adaptive` | 1200 MHz while busy, 390 idle | unchanged | follows `gpu_utilization`, holds 20 s |
 | `stock` | `off` | 390 MHz | unchanged | nothing raised |
