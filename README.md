@@ -1,6 +1,19 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v11.10 MAX sleeps at 390 MHz with the screen off
+
+`max` no longer sits at 1600 MHz with the screen dark. It now follows the screen:
+
+| state | MAX | SAFER |
+| --- | --- | --- |
+| screen on | **1600 MHz** (floor = ceiling) | 790 MHz rest, 1600 on any GPU/CPU work |
+| screen off | **390 MHz** | 390 MHz |
+| 50 °C | 390 MHz until cool | 390 MHz until cool |
+
+The switch happens on the next 1 s tick in both directions, so waking the phone is back at
+1600 almost instantly. `status` previews it (`plan: ... screen-off -> level 44`).
+
 ## v11.9 Repair commands
 
 ```sh
@@ -65,11 +78,11 @@ su -c "sh $M/gpufix.sh preset stock"     # let go of everything
 
 | | `safer` | `max` |
 | --- | --- | --- |
-| idle, screen on | 790 MHz | 1600 MHz |
+| idle, screen on | 790 MHz | **1600 MHz** |
 | GPU or CPU busy | 1600 MHz (within 1 s) | 1600 MHz |
-| screen off | 390 MHz | 1600 MHz |
+| screen off | 390 MHz | **390 MHz** |
 | at 50 °C | 390 MHz until cool | 390 MHz until cool |
-| heat / drain | low | high, sustained |
+| heat / drain | low | high while the screen is on |
 
 The installer asks with the volume keys: **VOLUME UP = SAFER**, **VOLUME DOWN = MAX**, no
 press = SAFER. `max` and `stock` reset `MIN_HZ`/`SLEEP_HZ` to 390, so switching profiles never

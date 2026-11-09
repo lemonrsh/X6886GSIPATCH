@@ -39,7 +39,7 @@ GPU (v11.7, optional): the installer asks with the volume keys -
   VOLUME UP = SAFER (recommended), VOLUME DOWN = MAX, no press = skip/default.
   SAFER: 790 MHz rest -> 1600 MHz within 1 s of ANY UI work (GPU or CPU, so the whole
   UI benefits, not only games) -> 390 MHz when the screen is off.
-  MAX:   pinned at 1600 MHz all the time.
+  MAX:   1600 MHz whenever the screen is on, 390 MHz while it is off.
   su -c 'sh .../gpufix.sh preset safer'  # recommended
   su -c 'sh .../gpufix.sh preset max'    # fastest OPP (1600 MHz) always, pinned
   su -c 'sh .../gpufix.sh preset stock'  # release the floor

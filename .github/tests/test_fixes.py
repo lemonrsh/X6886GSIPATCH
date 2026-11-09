@@ -494,11 +494,41 @@ class GpuPlanTests(unittest.TestCase):
         script = f"""
 set -eu
 MODE={mode}; TOP_HZ={top}; MIN_HZ={min_hz}; HOT_HZ={hot_hz}; LOAD_ON={load_on}
+SLEEP_HZ=390000
 N_UTIL=/nonexistent
 num_or() {{ case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }}
 {block}
 hot() {{ [ {hot} = 1 ]; }}
+screen_on() {{ return 0; }}
+low_battery() {{ return 1; }}
 node_val() {{ echo {load}; }}
+plan_now
+"""
+        out = []
+        for shell in SHELLS:
+            result = run_shell(shell, script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            out.append(result.stdout.strip())
+        self.assertEqual(out[0], out[1], "bash and dash disagree")
+        return out[0]
+
+    def plan_scr(self, mode, top, screen_off, hot=0, sleep_hz=390000, hot_hz=0):
+        """plan_now() with the screen state stubbed (max is screen-aware since v11.10)."""
+        block = marked_block(
+            read("gpufix.sh"),
+            "# --- plan helper (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end plan helper ---",
+        )
+        script = f"""
+set -eu
+MODE={mode}; TOP_HZ={top}; MIN_HZ=390000; HOT_HZ={hot_hz}; LOAD_ON=60; SLEEP_HZ={sleep_hz}
+N_UTIL=/nonexistent
+num_or() {{ case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }}
+{block}
+hot() {{ [ {hot} = 1 ]; }}
+screen_on() {{ [ {screen_off} = 0 ]; }}
+low_battery() {{ return 1; }}
+node_val() {{ echo 0; }}
 plan_now
 """
         out = []
@@ -511,8 +541,14 @@ plan_now
 
     def test_floor_mode_asks_for_the_fastest_opp(self):
         # TOP_HZ=0 is "fastest OPP"; plan_now must pass the 0 through untouched.
-        self.assertEqual(self.plan("floor", 0, hot=0), "0 floor")
-        self.assertEqual(self.plan("floor", 1200000, hot=0), "1200000 floor")
+        self.assertEqual(self.plan_scr("floor", 0, 0), "0 floor")
+        self.assertEqual(self.plan_scr("floor", 1200000, 0), "1200000 floor")
+
+    def test_floor_mode_sleeps_at_the_lowest_opp(self):
+        # max: the top OPP while the screen is on, 390 while it is off
+        self.assertEqual(self.plan_scr("floor", 0, 1), "390000 screen-off")
+        self.assertEqual(self.plan_scr("floor", 1200000, 1), "390000 screen-off")
+        self.assertEqual(self.plan_scr("floor", 0, 1, hot=1), "390000 hot")
 
     def test_off_and_adaptive(self):
         self.assertEqual(self.plan("off", 1200000, hot=0), "390000 released")
@@ -520,9 +556,9 @@ plan_now
         self.assertEqual(self.plan("adaptive", 1200000, hot=0, load=10), "390000 idle")
 
     def test_hot_battery_releases(self):
-        self.assertEqual(self.plan("floor", 0, hot=1), "390000 hot")
+        self.assertEqual(self.plan_scr("floor", 0, 0, hot=1), "390000 hot")
         # an explicit HOT_HZ keeps a warm-but-fast floor instead of the stock one
-        self.assertEqual(self.plan("floor", 0, hot=1, hot_hz=900000), "900000 hot")
+        self.assertEqual(self.plan_scr("floor", 0, 0, hot=1, hot_hz=900000), "900000 hot")
 
 
 class GpuSaferModeTests(unittest.TestCase):
