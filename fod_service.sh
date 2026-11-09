@@ -180,7 +180,7 @@ read_events() {
   done
 }
 start_pipe() {
-  # first stage records getevent's own pid (exec keeps it) so only OUR getevent is ever killed, not dt2w's
+  # first stage records getevent's own pid (exec keeps it) so only OUR getevent is ever killed
   if [ "$FILTER_OK" = 1 ]; then
     sh -c 'echo $$ > "$1"; exec getevent "$2"' x "$GPID" "$DEV" 2>/dev/null | grep --line-buffered -E '0001 (014a|00c3) ' | read_events
   else

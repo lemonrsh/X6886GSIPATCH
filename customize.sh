@@ -6,10 +6,17 @@ P123="eb42af99c471a25f2feef7f3c9e0eb9629a32871b662340cca877860cc134ebd"
 N12="22467890811df0e2212e3947a490f0030cd74379e271ef6f654aaaa6433e103e"
 N123="28ac013c65c32cbb55c682e66d9fc0e26a7f82a9cbfb7c26a57f512cc3104c84"
 DATA=${FODDATA:-/data/adb}
-# Stop any watcher left running by an older release before replacing the module.
-for pid in $(ps -A -o PID,ARGS 2>/dev/null | awk 'NR>1 && /\/screentime\.sh([[:space:]]|$)/ {print $1}'); do
+# Stop any watchers left running by an older release before replacing the module.
+for pid in $(ps -A -o PID,ARGS 2>/dev/null | awk 'NR>1 && (/\/screentime\.sh([[:space:]]|$)/ || /\/dt2w\.sh([[:space:]]|$)/) {print $1}'); do
   kill "$pid" 2>/dev/null
 done
+if [ -r "$DATA/fod/.dt2w_getevent.pid" ]; then
+  gpid=$(cat "$DATA/fod/.dt2w_getevent.pid" 2>/dev/null)
+  case "$gpid" in
+    ''|*[!0-9]*) ;;
+    *) [ "$gpid" -gt 1 ] && grep -q getevent "/proc/$gpid/cmdline" 2>/dev/null && kill "$gpid" 2>/dev/null ;;
+  esac
+fi
 CUR=$(sha256sum /odm/lib64/libgf_hal.so 2>/dev/null | cut -d' ' -f1)
 ui_print "- /odm/lib64/libgf_hal.so sha256: ${CUR:-not found}"
 if [ "$CUR" != "$STOCK" ] && [ "$CUR" != "$P12" ] && [ "$CUR" != "$P123" ] && [ "$CUR" != "$N12" ] && [ "$CUR" != "$N123" ]; then
@@ -27,7 +34,7 @@ else
 fi
 
 # the standalone modules this one replaces (v10: + dlfix = Download Lag Fix): disable them so nothing is mounted/run twice (applies on reboot)
-for m in FSBP RU dt2w_infinix_x6886 fod_gsi_x6886_lemonrsh gsi_perf_tweaks gsi_ultimate_battery_x6886 \
+for m in FSBP RU fod_gsi_x6886_lemonrsh gsi_perf_tweaks gsi_ultimate_battery_x6886 \
          messenger_background_fix otp_autofix dlfix DownloadLagFix x6886_batterycap battery_capacity_x6886 fod_hbm_x6886 fod_x6886 fod_all_x6886 batteryfix sffix; do
   if [ -d "$DATA/modules/$m" ]; then touch "$DATA/modules/$m/disable"; ui_print "- disabled old module: $m"; fi
 done
@@ -63,20 +70,7 @@ PERF_GOVERNOR=0   # 1 = pin CPU policies to the performance governor (more heat 
 SF_BOOST=1        # SurfaceFlinger -> top-app cpuset, nice -8
 CONF
 fi
-# v11.2: new optional configs (created once, never overwritten)
-if [ ! -f "$DATA/fod/dt2w.conf" ]; then
-cat > "$DATA/fod/dt2w.conf" <<'CONF'
-TAP_MIN_MS=80
-TAP_MAX_MS=500
-TAP_HOLD_MS=350
-MAX_DIST_PX=110
-MAX_MOVE_PX=60
-DEBOUNCE_S=1
-GATE_AWAKE=1
-ARM_S=5
-WAKE_FAST=0
-CONF
-fi
+# v11.2: new optional config (created once, never overwritten)
 if [ ! -f "$DATA/fod/bg.conf" ]; then
 cat > "$DATA/fod/bg.conf" <<'CONF'
 # packages allowed to run in the background / bypass Doze (add e.g. com.whatsapp)
@@ -106,6 +100,8 @@ else
 fi
 # v10.5: SOT watcher/config removed; this module does not manage Settings battery history.
 rm -f "$DATA/fod/screentime.conf" "$DATA/fod/screentime.now"
+# Double-tap-to-wake listener/config removed.
+rm -f "$DATA/fod/dt2w.conf" "$DATA/fod/dt2w.log" "$DATA/fod/dt2w_last_wake" "$DATA/fod/.dt2w_main.pid" "$DATA/fod/.dt2w_getevent.pid"
 # v10: Download Lag Fix settings: migrate the standalone module's config once
 [ ! -f "$DATA/fod/dlfix.conf" ] && [ -f "$DATA/dlfix.conf" ] && cp "$DATA/dlfix.conf" "$DATA/fod/dlfix.conf"
 rm -f "$DATA/fod/safe.flag" "$DATA/fod/bootcount" "$DATA/fod/.refresh.pid"
@@ -114,5 +110,5 @@ ui_print "- v10.5: SOT watcher removed; Settings battery history/database are un
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log sofod_touch.log gsi.log"
 ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
-ui_print "- v11.2: see CHANGELOG.txt. Logs also: dt2w.log. Config: dt2w.conf, bg.conf."
+ui_print "- v11.2: see CHANGELOG.txt. Config: bg.conf. (DT2W removed)"
 ui_print "- Reboot to apply."

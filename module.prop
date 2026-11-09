@@ -3,4 +3,4 @@ name=X6886 GSI PATCH by lemonrsh v11.2.2 FIX
 version=v11.2.2
 versionCode=114
 author=lemonrsh
-description=X6886 GSI patch v11.2.2: safer HBM watchdog cancellation, single-instance FOD/SOFOD helpers, AOD-aware idle dexopt; retains the v11.2.1 wake path, thermal cutoff, and performance defaults.
+description=X6886 GSI patch v11.2.2: safer HBM watchdog cancellation, single-instance FOD/SOFOD helpers, AOD-aware idle dexopt; DT2W removed; retains thermal cutoff and performance defaults.
