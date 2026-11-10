@@ -9,10 +9,9 @@ MODDIR=${0%/*}
 # boot counter (safe mode, see post-fs-data.sh): reset once the phone is up for 20 s past boot completed
 ( while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done; sleep 20; echo 0 > /data/adb/fod/bootcount ) &
 (
-  for part in fod_service.sh dlfix.sh perf_tweaks.sh messenger_bg.sh otp_autofix.sh gpufix.sh; do
+  for part in fod_service.sh dlfix.sh perf_tweaks.sh messenger_bg.sh otp_autofix.sh; do
     if [ -f "$MODDIR/$part" ]; then
-      case "$part" in gpufix.sh) A=boot ;; *) A= ;; esac
-      ( sh "$MODDIR/$part" $A >/dev/null 2>&1 & )
+      ( sh "$MODDIR/$part" >/dev/null 2>&1 & )
     fi
     sleep 1
   done
