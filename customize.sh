@@ -7,7 +7,7 @@ N12="22467890811df0e2212e3947a490f0030cd74379e271ef6f654aaaa6433e103e"
 N123="28ac013c65c32cbb55c682e66d9fc0e26a7f82a9cbfb7c26a57f512cc3104c84"
 DATA=${FODDATA:-/data/adb}
 # Stop any watchers left running by an older release before replacing the module.
-for pid in $(ps -A -o PID,ARGS 2>/dev/null | awk 'NR>1 && (/\/screentime\.sh([[:space:]]|$)/ || /\/dt2w\.sh([[:space:]]|$)/) {print $1}'); do
+for pid in $(ps -A -o PID,ARGS 2>/dev/null | awk 'NR>1 && (/\/screentime\.sh([[:space:]]|$)/ || /\/dt2w\.sh([[:space:]]|$)/ || /\/X6886[^[:space:]]*\/gpufix\.sh([[:space:]]|$)/) {print $1}'); do
   kill "$pid" 2>/dev/null
 done
 if [ -r "$DATA/fod/.dt2w_getevent.pid" ]; then
@@ -15,6 +15,13 @@ if [ -r "$DATA/fod/.dt2w_getevent.pid" ]; then
   case "$gpid" in
     ''|*[!0-9]*) ;;
     *) [ "$gpid" -gt 1 ] && grep -q getevent "/proc/$gpid/cmdline" 2>/dev/null && kill "$gpid" 2>/dev/null ;;
+  esac
+fi
+if [ -r "$DATA/fod/.gpufix.pid" ]; then
+  gpid=$(cat "$DATA/fod/.gpufix.pid" 2>/dev/null)
+  case "$gpid" in
+    ''|*[!0-9]*) ;;
+    *) [ "$gpid" -gt 1 ] && grep -q gpufix "/proc/$gpid/cmdline" 2>/dev/null && kill "$gpid" 2>/dev/null ;;
   esac
 fi
 CUR=$(sha256sum /odm/lib64/libgf_hal.so 2>/dev/null | cut -d' ' -f1)
@@ -77,32 +84,6 @@ cat > "$DATA/fod/bg.conf" <<'CONF'
 KEEP_PKGS="com.google.android.gms com.facebook.orca"
 CONF
 fi
-# v11.3: GPU DVFS helper (gpufix.sh). Read-only by default; GPU_FIX=1 is required for apply.
-if [ ! -f "$DATA/fod/gpu.conf" ]; then
-cat > "$DATA/fod/gpu.conf" <<'CONF'
-# GPU DVFS on MT6789 / GED. Helper: sh gpufix.sh [status|probe 20|run|revert]
-# Disabled here: the main patch only provides the tool. For the always-on
-# governor install the separate GPU-DVFS-X6886 module instead.
-ENABLED=0            # 1 = start the governor at boot (0 = never touch the GPU nodes)
-MODE=safer           # safer (screen-aware) | adaptive | floor (always max) | off (always stock)
-MIN_HZ=790000        # rest floor while in use (safer); 'preset max' resets it to 390000
-SLEEP_HZ=390000      # floor while the screen is off, hot or nearly empty (lowest OPP)
-SCREEN_OFF_MIN=1     # 1 = SLEEP_HZ whenever the screen is off (recommended)
-BAT_MIN=15           # below this battery % (not charging) do not raise the floor
-CPU_ON=60            # safer: CPU busy % that also raises the floor (the UI, not just games)
-SAFE_INDEX=          # ladder index of MIN_HZ when /proc is unreadable; preset fills it
-TOP_HZ=0             # floor while the UI/GPU is busy; 0 = the fastest OPP (1600 MHz)
-LOAD_ON=60           # mode=adaptive only: gpu_utilization load % counted as busy
-HOLD_S=20            # mode=adaptive only: keep the floor up this long after the last busy sample
-INTERVAL=1           # governor period in seconds
-HOT_HZ=0             # floor while above TEMP_MAX; 0 = MIN_HZ, e.g. 900000 to stay fast
-TEMP_MAX=500         # ONLY at/above this temperature (deci-degC = 50 C) the floor drops
-CEIL_HZ=1600000      # GED upper bound published by the governor; 0 = the fastest OPP
-TOP_INDEX=44         # slowest OPP index, used only when /proc/gpufreqv2 is unreadable
-SYNC_PARAM=1         # keep gpu_cust_boost_freq in sync with the floor
-SAMPLE_S=10          # default probe/verify window in seconds
-CONF
-fi
 # v7/v10: add new keys to existing configs without touching the user's values
 addkey() { grep -q "^$2=" "$1" 2>/dev/null || echo "$2=$3" >> "$1"; }
 addkey "$DATA/fod/hbm.conf" WAIT_SO 80
@@ -111,36 +92,6 @@ addkey "$DATA/fod/gsi.conf" VM_DIRTY 1
 addkey "$DATA/fod/gsi.conf" DEX_INSTALL_VERIFY 1
 addkey "$DATA/fod/gsi.conf" FAST_FIRST_BOOT 1
 addkey "$DATA/fod/gsi.conf" BOOT_THREADS 0
-addkey "$DATA/fod/gpu.conf" SYNC_PARAM 1
-# v11.6/v12: the throttle is a single limit at 50 C; nothing is throttled below it.
-# The original migration was anchored to the end of the line, so it never matched the
-# configs this installer writes (every line carries a trailing comment): phones kept
-# throttling at 43 C while every message said 50 C.
-if grep -q '^TEMP_MAX=430' "$DATA/fod/gpu.conf" 2>/dev/null; then
-  sed -i 's/^TEMP_MAX=430.*/TEMP_MAX=500         # ONLY at/above this temperature (deci-degC = 50 C) the floor drops/' "$DATA/fod/gpu.conf"
-  ui_print "- gpu.conf: TEMP_MAX 430 -> 500 (throttle only at 50 C, was 43 C)"
-fi
-addkey "$DATA/fod/gpu.conf" TEMP_MAX 500
-addkey "$DATA/fod/gpu.conf" SAMPLE_S 10
-addkey "$DATA/fod/gpu.conf" MIN_HZ 390000
-addkey "$DATA/fod/gpu.conf" LOAD_ON 60
-addkey "$DATA/fod/gpu.conf" HOLD_S 20
-addkey "$DATA/fod/gpu.conf" HOT_HZ 0
-addkey "$DATA/fod/gpu.conf" CEIL_HZ 1600000
-addkey "$DATA/fod/gpu.conf" TOP_INDEX 44
-addkey "$DATA/fod/gpu.conf" TOP_HZ 0
-addkey "$DATA/fod/gpu.conf" SCREEN_OFF_MIN 1
-addkey "$DATA/fod/gpu.conf" BAT_MIN 15
-addkey "$DATA/fod/gpu.conf" SLEEP_HZ 390000
-addkey "$DATA/fod/gpu.conf" TOP_HZ_KHZ 1600000
-addkey "$DATA/fod/gpu.conf" BOTTOM_HZ_KHZ 390000
-addkey "$DATA/fod/gpu.conf" CPU_ON 60
-addkey "$DATA/fod/gpu.conf" SAFE_INDEX ""
-# v11.8: a safer install must also lift GED's upper bound, or the stock 1100 MHz cap wins.
-if [ "$(sed -n 's/^MODE=//p' "$DATA/fod/gpu.conf" 2>/dev/null | head -n 1)" = safer ]; then
-  if ! grep -q '^CEIL_HZ=' "$DATA/fod/gpu.conf"; then echo 'CEIL_HZ=0' >> "$DATA/fod/gpu.conf"
-  else sed -i 's/^CEIL_HZ=1600000.*/CEIL_HZ=0            # 0 = the top OPP/' "$DATA/fod/gpu.conf"; fi
-fi
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling
 addkey "$DATA/fod/dlfix.conf" ADAPTIVE 1
@@ -158,6 +109,9 @@ fi
 rm -f "$DATA/fod/screentime.conf" "$DATA/fod/screentime.now"
 # Double-tap-to-wake listener/config removed.
 rm -f "$DATA/fod/dt2w.conf" "$DATA/fod/dt2w.log" "$DATA/fod/dt2w_last_wake" "$DATA/fod/.dt2w_main.pid" "$DATA/fod/.dt2w_getevent.pid"
+# GPU governor (gpufix) removed; clean up legacy main-module state in /data/adb/fod only
+# (leaves any separate standalone GPU module state untouched).
+rm -f "$DATA/fod/gpu.conf" "$DATA/fod/gpu.orig" "$DATA/fod/gpu.log" "$DATA/fod/.gpufix.pid" "$DATA/fod/.gpufix.reload"
 # v10: Download Lag Fix settings: migrate the standalone module's config once
 [ ! -f "$DATA/fod/dlfix.conf" ] && [ -f "$DATA/dlfix.conf" ] && cp "$DATA/dlfix.conf" "$DATA/fod/dlfix.conf"
 rm -f "$DATA/fod/safe.flag" "$DATA/fod/bootcount" "$DATA/fod/.refresh.pid"
@@ -166,24 +120,5 @@ ui_print "- v10.5: SOT watcher removed; Settings battery history/database are un
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log sofod_touch.log gsi.log"
 ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
-# v11.6: the GPU governor is optional here, but the choice is one volume press away.
-# Any key press enables it with that profile; the 20 s timeout keeps a dirty flash
-# governor-free, so an unattended install never changes GPU behaviour behind your back.
-ui_print " "
-ui_print "- GPU governor (optional): VOLUME UP = SAFER, VOLUME DOWN = MAX, else skip (20 s)."
-ui_print "  SAFER: the whole system gets the top OPP when the GPU is busy and releases to"
-ui_print "  the lowest OPP with the screen off. MAX: pinned at the top OPP always."
-GPUFIX_CHOICE=$MODPATH/.choice sh "$MODPATH/gpufix.sh" choose >&2
-_CH=$(cat "$MODPATH/.choice" 2>/dev/null)
-rm -f "$MODPATH/.choice"
-case "$_CH" in
-  safer|max) sh "$MODPATH/gpufix.sh" preset "$_CH" >&2 || true
-             # v12: publish the nodes immediately, no reboot and no manual step needed
-             sh "$MODPATH/gpufix.sh" reapply 2>&1 | sed 's/^/  /'
-             ui_print "  -> enabled with preset $_CH"
-             ui_print "  Change it later: su -c 'sh /data/adb/modules/X6886*/gpufix.sh preset safer|max'" ;;
-  *)         ui_print "  -> skipped. Enable later: su -c 'sh /data/adb/modules/X6886*/gpufix.sh preset safer'"
-             ui_print "     (or install the separate GPU-DVFS-X6886 module)" ;;
-esac
-ui_print "- v11.2: see CHANGELOG.txt. Config: bg.conf. (DT2W removed)"
+ui_print "- v14: see CHANGELOG.txt. Config: bg.conf. (gpufix & DT2W removed)"
 ui_print "- Reboot to apply."

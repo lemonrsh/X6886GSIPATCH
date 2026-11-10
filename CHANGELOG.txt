@@ -1,3 +1,15 @@
+v14 (2026-11-10) - GPU governor (gpufix) removed
+* Removed gpufix.sh and gpumod/ (standalone GPU-DVFS-X6886 module) so GPU DVFS tuning
+  can be maintained as a separate module project (the last combined release remains on
+  tag v13-3fe7fe6).
+* Removed gpufix.sh launch from service.sh, the GPU volume-key installer prompt and
+  gpu.conf management from customize.sh, GPU blocks from diag.sh, and the standalone GPU
+  module packaging from .github/workflows/release.yml.
+* In-place upgrades from v11.3-v13 stop any legacy main-module gpufix process and clean
+  up /data/adb/fod/gpu.conf, gpu.orig, gpu.log, .gpufix.pid, and .gpufix.reload without
+  touching /data/adb/gpufix used by any standalone GPU module.
+* Version bumped to v14 / versionCode 132.
+
 v13 (2026-11-09) - "both presets are 1100": the two limits below the nodes we write
 * After v12 every index and every kHz parameter could read back perfectly, the daemon
   re-published them every 15 s, and the GPU could STILL sit at 1100 MHz in BOTH presets.
