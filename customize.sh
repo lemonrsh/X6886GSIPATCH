@@ -84,6 +84,22 @@ cat > "$DATA/fod/bg.conf" <<'CONF'
 KEEP_PKGS="com.google.android.gms com.facebook.orca"
 CONF
 fi
+# v14.1: DRAM lock (dramlock.sh): max while the screen is on, half while it is off (created once, never overwritten)
+if [ ! -f "$DATA/fod/dram.conf" ]; then
+cat > "$DATA/fod/dram.conf" <<'CONF'
+DRAM_LOCK=1       # 0 = give the DRAM back to the stock MediaTek governor
+ON_FREQ=max       # screen on:  max | min | a Hz value from available_frequencies (e.g. 3200000000)
+OFF_FREQ=half     # screen off: half (largest step <= ON/2, 1866 MHz with a 4266 MHz max) | min | max | Hz
+RECONCILE_S=60    # re-check screen state and re-assert the lock every N seconds (events are instant)
+CONF
+fi
+# A manual always-max boot script would fight the screen-off half step: park it (reversible).
+for f in "$DATA/service.d/lock_dram.sh" "$DATA/post-fs-data.d/lock_dram.sh"; do
+  if [ -f "$f" ] && grep -q mtk-dvfsrc-devfreq "$f" 2>/dev/null; then
+    mv -f "$f" "$f.disabled_by_x6886" && chmod 0644 "$f.disabled_by_x6886"
+    ui_print "- parked $f (DRAM lock is now handled by this module)"
+  fi
+done
 # v7/v10: add new keys to existing configs without touching the user's values
 addkey() { grep -q "^$2=" "$1" 2>/dev/null || echo "$2=$3" >> "$1"; }
 addkey "$DATA/fod/hbm.conf" WAIT_SO 80
@@ -115,10 +131,10 @@ rm -f "$DATA/fod/gpu.conf" "$DATA/fod/gpu.orig" "$DATA/fod/gpu.log" "$DATA/fod/.
 # v10: Download Lag Fix settings: migrate the standalone module's config once
 [ ! -f "$DATA/fod/dlfix.conf" ] && [ -f "$DATA/dlfix.conf" ] && cp "$DATA/dlfix.conf" "$DATA/fod/dlfix.conf"
 rm -f "$DATA/fod/safe.flag" "$DATA/fod/bootcount" "$DATA/fod/.refresh.pid"
-ui_print "- Configs in /data/adb/fod: hbm.conf refresh.conf gsi.conf dlfix.conf sofod_touch.conf(optional)"
+ui_print "- Configs in /data/adb/fod: hbm.conf refresh.conf gsi.conf dlfix.conf dram.conf sofod_touch.conf(optional)"
 ui_print "- v10.5: SOT watcher removed; Settings battery history/database are untouched."
 ui_print "- Battery sysfs scaling remains disabled."
-ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log sofod_touch.log gsi.log"
+ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log dram.log sofod_touch.log gsi.log"
 ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
-ui_print "- v14: see CHANGELOG.txt. Config: bg.conf. (gpufix & DT2W removed)"
+ui_print "- v14.1: DRAM lock - max (4266 MHz) with screen on, half (1866 MHz) with screen off. dram.conf"
 ui_print "- Reboot to apply."
