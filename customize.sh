@@ -96,8 +96,8 @@ CONF
 fi
 grep -q "^SCREEN_POLL=" "$DATA/fod/dram.conf" 2>/dev/null || echo "SCREEN_POLL=1" >> "$DATA/fod/dram.conf"
 # A manual always-max boot script would fight the screen-off half step: park it (reversible).
-for f in "$DATA/service.d/lock_dram.sh" "$DATA/post-fs-data.d/lock_dram.sh"; do
-  if [ -f "$f" ] && grep -q mtk-dvfsrc-devfreq "$f" 2>/dev/null; then
+for f in "$DATA/service.d/lock_dram.sh" "$DATA/post-fs-data.d/lock_dram.sh" "$DATA"/service.d/*.sh "$DATA"/post-fs-data.d/*.sh; do
+  if [ -f "$f" ] && grep -q mtk-dvfsrc-devfreq "$f" 2>/dev/null && grep -q userspace "$f" 2>/dev/null; then
     mv -f "$f" "$f.disabled_by_x6886" && chmod 0644 "$f.disabled_by_x6886"
     ui_print "- parked $f (DRAM lock is now handled by this module)"
   fi
@@ -138,5 +138,5 @@ ui_print "- v10.5: SOT watcher removed; Settings battery history/database are un
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log dram.log sofod_touch.log gsi.log"
 ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
-ui_print "- v14.2: DRAM lock - 4266 MHz screen on / 1866 MHz screen off, instant + seamless. dram.conf"
+ui_print "- v14.3: DRAM lock - 4266 MHz screen on / 1866 MHz screen off, instant + seamless. dram.conf"
 ui_print "- Reboot to apply."

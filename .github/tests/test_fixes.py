@@ -451,6 +451,16 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
             "--------- beginning of events": "",
             "I/screen_toggled( 1580): 5": "",
             "": "",
+            # v14.3: PowerManagerService system-log lines (primary source on the X6886 GSI)
+            "I/PowerManagerService( 1580): Waking up from Asleep (uid=1000, reason=WAKE_REASON_POWER_BUTTON, details=android.policy:POWER)...": "on",
+            "I/PowerManagerService( 1580): Waking up from Dozing (uid=1000, reason=WAKE_REASON_GESTURE, details=null)...": "on",
+            "I/PowerManagerService( 1580): Going to sleep due to power_button (uid 1000, screenOffTimeout=30000, activityTimeoutWM=-1, maxDimRatio=0.2, maxDimDur=7000)...": "off",
+            "I/PowerManagerService( 1580): Going to sleep now due to long user inactivity": "off",
+            "I/PowerManagerService( 1580): Sleeping (uid 1000)...": "off",
+            "I/PowerManagerService( 1580): Dozing...": "off",
+            "I/PowerGroup( 1580): Waking up power group from Asleep (groupId=0, uid=1000, reason=WAKE_REASON_POWER_BUTTON, details=x)...": "on",
+            "I/PowerManagerService( 1580): Brightness boost activated (uid 1000)...": "",
+            "I/PowerManagerService( 1580): Something else 1": "",
         }
         with tempfile.TemporaryDirectory() as td:
             node = fake_node(td)
@@ -499,8 +509,8 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
                     "logcat": (
                         "#!/bin/sh\n"
                         "echo '--------- beginning of events'\n"
-                        "sleep 0.8; echo 'I/screen_toggled( 1580): 0'\n"
-                        "sleep 0.8; echo 'I/screen_toggled( 1580): 1'\n"
+                        "sleep 0.8; echo 'I/PowerManagerService( 1580): Going to sleep due to power_button (uid 1000)...'\n"
+                        "sleep 0.8; echo 'I/PowerManagerService( 1580): Waking up from Asleep (uid=1000, reason=x)...'\n"
                         "sleep 0.8; echo 'I/screen_toggled( 1580): 0'\n"
                         "exec sleep 60\n"
                     ),
@@ -608,6 +618,8 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
         self.assertIn("dramlock.sh status", read("diag.sh"))
         self.assertIn("SCREEN_POLL=1", customize)
         self.assertNotIn("mkfifo", read("dramlock.sh"))
+        self.assertIn("PowerManagerService:I", read("dramlock.sh"))
+        self.assertIn('touch "$FASTF"', read("dramlock.sh"))
 
 
 if __name__ == "__main__":

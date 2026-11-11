@@ -1,3 +1,19 @@
+v14.3 (2026-11-11) - DRAM lock: instant switch on the X6886 GSI (real screen source)
+* Field report (v14.2 status/log): only the 60 s reconcile ever switched the DRAM. The
+  screen_toggled event never arrived, and the panel nodes read "11" (lit) with the screen
+  off, so both fast triggers were blind and a change could take up to 60 s.
+* Events now come from PowerManagerService's own system-log lines, written at the START of
+  every transition: "Waking up from ..." -> 4266 MHz, "Going to sleep ..."/"Sleeping ..." ->
+  1866 MHz (PowerGroup variants and screen_toggled still accepted). The stream uses the same
+  logcat form sofod_touch.sh already runs successfully on this device (-b all, tag:I, *:S).
+* Safety net: if a reconcile ever has to correct the state (a change the fast triggers
+  missed), it logs that and reconciles every 10 s for the rest of the boot.
+* status: the daemon line no longer prints the pid twice.
+* Installer also parks any other service.d/post-fs-data.d script that sets the DVFSRC node
+  to userspace (an always-max script would fight the screen-off step; "stock=" was empty).
+* Tests: PowerManagerService line parsing; the end-to-end run is driven by those lines.
+* Version bumped to v14.3 / versionCode 135.
+
 v14.2 (2026-11-11) - DRAM lock: screen-on switch fixed, instant + seamless both ways
 * FIX: with the screen on the DRAM could stay at the screen-off step (1866 MHz) - v14.1
   depended on the logcat screen_toggled event plus a 60 s reconcile, so a missed event

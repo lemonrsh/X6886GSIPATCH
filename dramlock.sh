@@ -1,10 +1,11 @@
 #!/system/bin/sh
-# X6886 DRAM lock (v14.2) - MediaTek DVFSRC devfreq (mtk-dvfsrc-devfreq).
+# X6886 DRAM lock (v14.3) - MediaTek DVFSRC devfreq (mtk-dvfsrc-devfreq).
 #   screen ON  -> DRAM locked at ON_FREQ  (default: max = 4266 MHz), applied the moment wake-up starts
 #   screen OFF -> DRAM locked at OFF_FREQ (default: half = largest step <= ON/2 = 1866 MHz)
 # "Screen off" means not interactive (Asleep or AOD/Dozing).
 # v14.2: three independent triggers feed ONE reader (a plain pipe, no fifo), first one wins:
-#   1. logcat screen_toggled event (1 = PhoneWindowManager.startedWakingUp, 0 = finishedGoingToSleep)
+#   1. logcat: PowerManagerService "Waking up from ..." / "Going to sleep ..." / "Sleeping ..."
+#      (v14.3; logged when the wake/sleep starts) and the screen_toggled event tag
 #   2. panel sysfs check every 0.5 s (dpms / backlight, read with shell builtins = no forks); a change
 #      switches at once and is then confirmed with `dumpsys power` (so AOD still counts as off)
 #   3. reconcile every RECONCILE_S s from `dumpsys power`, re-asserting the lock if anything undid it
@@ -16,7 +17,7 @@
 MODDIR=${0%/*}
 # (the DRAMLOCK_* environment overrides exist only for the host-side tests)
 D=${DRAMLOCK_D:-/data/adb/fod}; CONF=$D/dram.conf; LOG=$D/dram.log; ORIG=$D/dram.orig
-RELOADF=$D/.dram.reload; GENF=$D/.dram.gen
+RELOADF=$D/.dram.reload; GENF=$D/.dram.gen; FASTF=$D/.dram.fast
 NODE=${DRAMLOCK_NODE:-/sys/class/devfreq/mtk-dvfsrc-devfreq}
 BOOT_DELAY=${DRAMLOCK_BOOT_DELAY:-8}
 SCREEN_NODES=${DRAMLOCK_SCREEN_NODES:-"/sys/class/drm/card0-DSI-1/dpms /sys/class/leds/lcd-backlight/brightness /sys/class/backlight/*/brightness"}
@@ -93,6 +94,14 @@ dram_locked_at() {   # $1 = Hz -> success when governor/min/max already hold the
   [ "$_g" = userspace ] && [ "$_mn" = "$1" ] && [ "$_mx" = "$1" ]
 }
 dram_event_state() {   # $1 = logcat line -> on | off | (empty)
+  # v14.3: PowerManagerService system-log lines are the primary source (logged at the very start
+  # of every wake/sleep; screen_toggled never arrived on the X6886 GSI).
+  case "$1" in
+    *"Waking up from "*|*"Waking up power group"*|*"Nap time"*|*"Napping power group"*) echo on; return ;;
+    *"Going to sleep"*|*"Sleeping (uid"*|*"Sleeping power group"*|*"Powering off display group"*|*"Dozing..."*) echo off; return ;;
+    *screen_toggled*|0|1|"[0]"|"[1]") ;;
+    *) echo ""; return ;;
+  esac
   # brief: "I/screen_toggled( 1580): 1"  raw: "1"  some builds print "[1]"
   set -f; set -- $1; set +f
   [ $# -gt 0 ] || { echo ""; return; }
@@ -141,7 +150,7 @@ case "$1" in
   status)
     load_conf; dram_screen_sig
     _dp=$(daemon_pid)
-    echo "daemon:    ${_dp:+running pid $_dp}${_dp:-NOT running}"
+    if [ -n "$_dp" ]; then echo "daemon:    running pid $_dp"; else echo "daemon:    NOT running"; fi
     echo "node:      $NODE"
     echo "governor:  $(cat "$NODE/governor" 2>/dev/null)"
     echo "cur_freq:  $(cat "$NODE/cur_freq" 2>/dev/null) ($(mhz "$(cat "$NODE/cur_freq" 2>/dev/null)"))"
@@ -162,7 +171,7 @@ until [ "$(getprop sys.boot_completed)" = 1 ]; do sleep 2; done
 sleep "$BOOT_DELAY"   # let the vendor power HAL finish its own boot-time DVFSRC setup first
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 60000 ] && mv -f "$LOG" "$LOG.old"
 : > "$LOG"
-rm -f "$D/.dram.fifo" "$RELOADF"   # v14.1 leftovers
+rm -f "$D/.dram.fifo" "$RELOADF" "$FASTF"   # v14.1 leftovers / per-boot state
 [ -d "$NODE" ] || { log "no $NODE on this kernel - DRAM lock not available"; exit 0; }
 grep -qw userspace "$NODE/available_governors" 2>/dev/null || { log "userspace governor not offered - exiting"; exit 0; }
 # Remember the stock policy once per boot, before we touch it (used by DRAM_LOCK=0).
@@ -207,7 +216,8 @@ apply() {   # $1 = on|off  $2 = why
 events() {   # $1 = generation
   while :; do
     _gen=""; read -r _gen 2>/dev/null < "$GENF"; [ "$_gen" = "$1" ] || exit 0
-    logcat -b events -v brief -T 1 -s screen_toggled 2>/dev/null
+    # same stream form sofod_touch.sh already uses on this device (-b all, tag:I, *:S)
+    logcat -b all -T 1 -v brief PowerManagerService:I PowerGroup:I screen_toggled:I '*:S' 2>/dev/null
     sleep 3   # logd restarted / logcat refused: follow again
   done
 }
@@ -217,6 +227,7 @@ ticker() {   # panel checks, reconcile ticks, reload requests
   [ -n "$_last" ] || [ "$POLL" = 1 ] || _every=20   # no panel node: confirm state every 10 s instead
   while :; do
     sleep "$POLL"
+    if [ -f "$FASTF" ]; then [ "$POLL" = 1 ] && _every=10 || _every=20; fi   # fast triggers missed once
     if [ -f "$RELOADF" ]; then rm -f "$RELOADF"; echo reload; fi
     if [ "$SCREEN_POLL" = 1 ] && [ -n "$_last" ]; then
       dram_screen_sig
@@ -229,7 +240,11 @@ reader() {
   while read -r LINE; do
     case "$LINE" in
       tick)
-        S=$(dram_wake_state); [ -n "$S" ] && apply "$S" reconcile ;;
+        S=$(dram_wake_state)
+        if [ -n "$S" ] && [ -n "$STATE" ] && [ "$S" != "$STATE" ] && [ ! -f "$FASTF" ]; then
+          touch "$FASTF"; log "screen change was missed by event/panel triggers -> reconcile every 10 s from now on"
+        fi
+        [ -n "$S" ] && apply "$S" reconcile ;;
       reload)
         load_conf; STATE=""; log "reload: ON $(mhz "$ON_HZ") OFF $(mhz "$OFF_HZ") lock=$DRAM_LOCK"
         S=$(dram_wake_state); [ -n "$S" ] || S=on; apply "$S" reload ;;
