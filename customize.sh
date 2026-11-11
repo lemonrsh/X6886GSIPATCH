@@ -91,8 +91,10 @@ DRAM_LOCK=1       # 0 = give the DRAM back to the stock MediaTek governor
 ON_FREQ=max       # screen on:  max | min | a Hz value from available_frequencies (e.g. 3200000000)
 OFF_FREQ=half     # screen off: half (largest step <= ON/2, 1866 MHz with a 4266 MHz max) | min | max | Hz
 RECONCILE_S=60    # re-check screen state and re-assert the lock every N seconds (events are instant)
+SCREEN_POLL=1     # also watch the panel (dpms/backlight) every 0.5 s in case screen events are missed
 CONF
 fi
+grep -q "^SCREEN_POLL=" "$DATA/fod/dram.conf" 2>/dev/null || echo "SCREEN_POLL=1" >> "$DATA/fod/dram.conf"
 # A manual always-max boot script would fight the screen-off half step: park it (reversible).
 for f in "$DATA/service.d/lock_dram.sh" "$DATA/post-fs-data.d/lock_dram.sh"; do
   if [ -f "$f" ] && grep -q mtk-dvfsrc-devfreq "$f" 2>/dev/null; then
@@ -136,5 +138,5 @@ ui_print "- v10.5: SOT watcher removed; Settings battery history/database are un
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log dram.log sofod_touch.log gsi.log"
 ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
-ui_print "- v14.1: DRAM lock - max (4266 MHz) with screen on, half (1866 MHz) with screen off. dram.conf"
+ui_print "- v14.2: DRAM lock - 4266 MHz screen on / 1866 MHz screen off, instant + seamless. dram.conf"
 ui_print "- Reboot to apply."

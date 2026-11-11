@@ -1,7 +1,7 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## v14.1: DRAM lock (screen on = max, screen off = half)
+## v14.2: DRAM lock (screen on = max, screen off = half)
 
 `dramlock.sh` locks the MediaTek DVFSRC DRAM clock (`/sys/class/devfreq/mtk-dvfsrc-devfreq`):
 
@@ -10,8 +10,11 @@ A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x688
 | On | 4266 MHz (top step) | applied as soon as the wake-up starts |
 | Off / AOD | 1866 MHz | "half" = largest step at or below 4266 / 2 |
 
-- It follows the framework's `screen_toggled` event, so there's no fast polling. Every 60 s it
-  checks `dumpsys power` and re-applies the lock if the power HAL or thermal code undid it.
+- Switches instantly and seamlessly (1866 -> 4266 MHz directly, never through the lowest step).
+  Triggers: the framework's `screen_toggled` event, a no-fork panel check every 0.5 s
+  (dpms/backlight, confirmed by `dumpsys power` so AOD stays at half), and a 60 s reconcile
+  that re-applies the lock if the power HAL or thermal code undid it.
+- v14.2 fixes v14.1 staying at 1866 MHz with the screen on when the screen event was missed.
 - Config: `/data/adb/fod/dram.conf` (`DRAM_LOCK`, `ON_FREQ`, `OFF_FREQ`, `RECONCILE_S`).
   To apply changes without a reboot:
   `su -c sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/dramlock.sh reload`.
