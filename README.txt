@@ -1,4 +1,4 @@
-X6886 GSI PATCH by lemonrsh — v14.1 (see CHANGELOG.txt; original base v10.7: 120 Hz always + FOD stability)
+X6886 GSI PATCH by lemonrsh — v14.2 (see CHANGELOG.txt; original base v10.7: 120 Hz always + FOD stability)
 ====================================
 
 This release removes the non-working screen-on-time (SOT) watcher completely.

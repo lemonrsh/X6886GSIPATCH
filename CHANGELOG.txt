@@ -1,3 +1,24 @@
+v14.2 (2026-11-11) - DRAM lock: screen-on switch fixed, instant + seamless both ways
+* FIX: with the screen on the DRAM could stay at the screen-off step (1866 MHz) - v14.1
+  depended on the logcat screen_toggled event plus a 60 s reconcile, so a missed event
+  left the clock at half for up to a minute (or indefinitely if the fifo reader stopped).
+* Three independent triggers now feed one reader through a plain pipe (no fifo, no exec 3<>):
+  1. logcat screen_toggled event (instant, as before)
+  2. NEW panel check every 0.5 s: /sys/class/drm/card0-DSI-1/dpms and backlight brightness,
+     read with shell builtins (no forks). A change switches immediately, then `dumpsys power`
+     confirms, so AOD/Dozing still ends at the screen-off step.
+  3. reconcile every RECONCILE_S (60 s; 10 s when no panel node exists).
+* Seamless switch: going up writes max -> target -> min, so the clock jumps 1866 -> 4266 on the
+  2nd write and never passes through the lowest step; going down writes min -> max -> target.
+* The event loop restarts itself if it ever ends; orphaned logcat loops exit by generation.
+* 'dramlock.sh status' now shows whether the daemon is running, the panel node state and the
+  last dram.log lines (which trigger fired: event / panel / confirm / reconcile).
+* 'reload' uses a flag file (applies within 1 s) instead of writing to a fifo.
+* New dram.conf key SCREEN_POLL=1 (added to existing configs).
+* Tests: panel-only end-to-end run with logcat delivering nothing (switch < 1.5 s both ways,
+  AOD stays half), panel signature parsing, seamless write order. Also pass under busybox ash.
+* Version bumped to v14.2 / versionCode 134.
+
 v14.1 (2026-11-11) - DRAM lock: max with the screen on, half with the screen off
 * NEW dramlock.sh (launched by service.sh) for the MediaTek DVFSRC devfreq node
   /sys/class/devfreq/mtk-dvfsrc-devfreq:

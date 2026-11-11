@@ -402,11 +402,36 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
                             self.assertEqual((node / f).read_text().strip(), target)
                         self.assertEqual((node / "governor").read_text().strip(), "userspace")
 
-    def test_set_lowers_min_before_moving_max(self):
+    def test_set_order_is_seamless(self):
         start = self.block.index("dram_set() {")
         body = self.block[start:self.block.index("\n}", start)]
-        self.assertLess(body.index('> "$NODE/min_freq"'), body.index('> "$NODE/max_freq"'))
-        self.assertLess(body.index('> "$NODE/max_freq"'), body.index('> "$NODE/userspace/set_freq"'))
+        up, down = body.split("  else\n", 1)
+        up = up[up.index("then\n"):]
+        # going up: max first, target on the 2nd write, never via the lowest step
+        self.assertLess(up.index('> "$NODE/max_freq"'), up.index('> "$NODE/userspace/set_freq"'))
+        self.assertLess(up.index('> "$NODE/userspace/set_freq"'), up.index('> "$NODE/min_freq"'))
+        self.assertNotIn("_low", up)
+        # going down: min must drop before max can go below it
+        self.assertLess(down.index('> "$NODE/min_freq"'), down.index('> "$NODE/max_freq"'))
+        self.assertLess(down.index('> "$NODE/max_freq"'), down.index('> "$NODE/userspace/set_freq"'))
+
+    def test_screen_sig(self):
+        with tempfile.TemporaryDirectory() as td:
+            node = fake_node(td)
+            dpms = pathlib.Path(td) / "dpms"
+            bl = pathlib.Path(td) / "brightness"
+            cases = [("On", "0", "10", "on"), ("Off", "0", "00", "off"), ("Off", "512", "01", "on"),
+                     ("Standby", "0", "00", "off")]
+            for shell in SHELLS:
+                for d, b, sig, state in cases:
+                    with self.subTest(shell=shell, dpms=d, bl=b):
+                        dpms.write_text(d + "\n")
+                        bl.write_text(b + "\n")
+                        out = self.run_block(
+                            shell, node,
+                            f'SCREEN_NODES="{dpms} {bl} {td}/missing/*"; dram_screen_sig; echo "$SIG $(dram_sig_state "$SIG")"',
+                        )
+                        self.assertEqual(out, f"{sig} {state}")
 
     def test_switches_governor_to_userspace(self):
         with tempfile.TemporaryDirectory() as td:
@@ -484,7 +509,8 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
                     (bindir / name).write_text(body)
                     (bindir / name).chmod(0o755)
                 env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
-                           DRAMLOCK_D=str(data), DRAMLOCK_NODE=str(node), DRAMLOCK_BOOT_DELAY="0")
+                           DRAMLOCK_D=str(data), DRAMLOCK_NODE=str(node), DRAMLOCK_BOOT_DELAY="0",
+                           DRAMLOCK_SCREEN_NODES=str(tdp / "no-panel-node"))
                 proc = subprocess.Popen([shell, str(mod / "dramlock.sh")], env=env,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                         start_new_session=True)
@@ -510,6 +536,67 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
                 self.assertIn("screen off (event)", log)
                 self.assertIn("screen on (event)", log)
 
+    def test_daemon_follows_panel_without_events(self):
+        """logcat delivers nothing (the v14.1 failure): the panel check alone must switch both ways."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as td:
+                tdp = pathlib.Path(td)
+                node = fake_node(td)
+                data = tdp / "fod"
+                data.mkdir()
+                mod = tdp / "mod"
+                mod.mkdir()
+                (mod / "dramlock.sh").write_text(read("dramlock.sh"))
+                bindir = tdp / "bin"
+                bindir.mkdir()
+                wake = tdp / "wake"
+                panel = tdp / "dpms"
+                wake.write_text("Asleep\n")
+                panel.write_text("Off\n")
+                stubs = {
+                    "getprop": "#!/bin/sh\necho 1\n",
+                    "dumpsys": f"#!/bin/sh\necho \"  mWakefulness=$(cat {wake})\"\n",
+                    "logcat": "#!/bin/sh\nexit 1\n",
+                }
+                for name, body in stubs.items():
+                    (bindir / name).write_text(body)
+                    (bindir / name).chmod(0o755)
+                env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
+                           DRAMLOCK_D=str(data), DRAMLOCK_NODE=str(node), DRAMLOCK_BOOT_DELAY="0",
+                           DRAMLOCK_SCREEN_NODES=str(panel))
+                proc = subprocess.Popen([shell, str(mod / "dramlock.sh")], env=env,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                        start_new_session=True)
+
+                def wait_for(value, limit=3.0):
+                    deadline = time.time() + limit
+                    while time.time() < deadline:
+                        if (node / "max_freq").read_text().strip() == value:
+                            return time.time()
+                        time.sleep(0.05)
+                    self.fail(f"max_freq never became {value}: " + (data / "dram.log").read_text())
+
+                try:
+                    wait_for("1866000000")                 # boot: asleep -> half
+                    t0 = time.time()
+                    wake.write_text("Awake\n"); panel.write_text("On\n")
+                    self.assertLess(wait_for("4266000000") - t0, 1.5)
+                    self.assertEqual((node / "min_freq").read_text().strip(), "4266000000")
+                    self.assertEqual((node / "userspace" / "set_freq").read_text().strip(), "4266000000")
+                    t0 = time.time()
+                    wake.write_text("Asleep\n"); panel.write_text("Off\n")
+                    self.assertLess(wait_for("1866000000") - t0, 1.5)
+                    # AOD: panel lit but framework Dozing -> confirmed back to half
+                    wake.write_text("Dozing\n"); panel.write_text("On\n")
+                    time.sleep(1.5)
+                    self.assertEqual((node / "max_freq").read_text().strip(), "1866000000")
+                finally:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=5)
+                log = (data / "dram.log").read_text()
+                self.assertIn("screen on (panel)", log)
+                self.assertIn("screen off (confirm)", log)
+
     def test_wiring(self):
         self.assertIn("dramlock.sh", read("service.sh"))
         customize = read("customize.sh")
@@ -519,6 +606,8 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
         self.assertIn('"$f.disabled_by_x6886"', customize)
         self.assertIn("single_instance dramlock", read("dramlock.sh"))
         self.assertIn("dramlock.sh status", read("diag.sh"))
+        self.assertIn("SCREEN_POLL=1", customize)
+        self.assertNotIn("mkfifo", read("dramlock.sh"))
 
 
 if __name__ == "__main__":
