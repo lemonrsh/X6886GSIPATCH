@@ -6,8 +6,10 @@ extract the small marked shell helper blocks and exercise them with stubs under
 both bash and dash. They are not a substitute for on-device FOD/AOD testing.
 """
 
+import os
 import pathlib
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -326,6 +328,197 @@ if dexopt_power_ok; then echo yes; else echo no; fi
                     result = run_shell(shell, script)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stdout.strip(), "yes" if expected else "no")
+
+
+AVAIL = "800000000 1200000000 1600000000 1866000000 2400000000 3200000000 4266000000"
+
+
+def fake_node(td, governor="mtk-dvfsrc-net", min_f="800000000", max_f="4266000000"):
+    node = pathlib.Path(td) / "devfreq"
+    (node / "userspace").mkdir(parents=True)
+    (node / "available_frequencies").write_text(AVAIL + "\n")
+    (node / "available_governors").write_text("mtk-dvfsrc-net userspace\n")
+    (node / "governor").write_text(governor + "\n")
+    (node / "min_freq").write_text(min_f + "\n")
+    (node / "max_freq").write_text(max_f + "\n")
+    (node / "cur_freq").write_text("800000000\n")
+    (node / "userspace" / "set_freq").write_text("\n")
+    return node
+
+
+class DramLockTests(unittest.TestCase):
+    def setUp(self):
+        self.block = marked_block(
+            read("dramlock.sh"),
+            "# --- dram helpers (regression-tested by .github/tests/test_fixes.py) ---",
+            "# --- end dram helpers ---",
+        )
+
+    def run_block(self, shell, node, body, power=""):
+        script = f"""
+set -eu
+NODE={str(node)!r}
+POWER_OUT={power!r}
+dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
+{self.block}
+{body}
+"""
+        result = run_shell(shell, script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_resolve_on_and_half(self):
+        cases = [
+            ('dram_resolve max ""', "4266000000"),
+            ('dram_resolve "" ""', "4266000000"),
+            ('dram_resolve min ""', "800000000"),
+            ('dram_resolve half 4266000000', "1866000000"),   # 2133 MHz is not a step -> 1866
+            ('dram_resolve half ""', "1866000000"),
+            ('dram_resolve half 3200000000', "1600000000"),
+            ('dram_resolve 3000000000 ""', "2400000000"),     # snaps down to a real step
+            ('dram_resolve 2400000000 ""', "2400000000"),
+            ('dram_resolve 100 ""', "800000000"),             # below every step -> lowest
+            ('dram_resolve bogus ""', ""),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            node = fake_node(td)
+            for shell in SHELLS:
+                for expr, expected in cases:
+                    with self.subTest(shell=shell, expr=expr):
+                        self.assertEqual(self.run_block(shell, node, f'echo "$({expr})"'), expected)
+
+    def test_set_locks_up_and_down(self):
+        for shell in SHELLS:
+            for start, target in [("4266000000", "1866000000"), ("1866000000", "4266000000")]:
+                with self.subTest(shell=shell, start=start, target=target):
+                    with tempfile.TemporaryDirectory() as td:
+                        node = fake_node(td, governor="userspace", min_f=start, max_f=start)
+                        out = self.run_block(
+                            shell, node,
+                            f'dram_set {target}; if dram_locked_at {target}; then echo locked; fi',
+                        )
+                        self.assertEqual(out, "locked")
+                        for f in ("min_freq", "max_freq", "userspace/set_freq"):
+                            self.assertEqual((node / f).read_text().strip(), target)
+                        self.assertEqual((node / "governor").read_text().strip(), "userspace")
+
+    def test_set_lowers_min_before_moving_max(self):
+        start = self.block.index("dram_set() {")
+        body = self.block[start:self.block.index("\n}", start)]
+        self.assertLess(body.index('> "$NODE/min_freq"'), body.index('> "$NODE/max_freq"'))
+        self.assertLess(body.index('> "$NODE/max_freq"'), body.index('> "$NODE/userspace/set_freq"'))
+
+    def test_switches_governor_to_userspace(self):
+        with tempfile.TemporaryDirectory() as td:
+            node = fake_node(td)
+            for shell in SHELLS:
+                with self.subTest(shell=shell):
+                    self.assertEqual(self.run_block(shell, node, "dram_set 4266000000; dram_gov"), "userspace")
+
+    def test_event_state(self):
+        cases = {
+            "I/screen_toggled( 1580): 1": "on",
+            "I/screen_toggled( 1580): 0": "off",
+            "11-11 10:00:00.000  1580  1601 I screen_toggled: 1": "on",
+            "1": "on",
+            "0": "off",
+            "[1]": "on",
+            "--------- beginning of events": "",
+            "I/screen_toggled( 1580): 5": "",
+            "": "",
+        }
+        with tempfile.TemporaryDirectory() as td:
+            node = fake_node(td)
+            for shell in SHELLS:
+                for line, expected in cases.items():
+                    with self.subTest(shell=shell, line=line):
+                        self.assertEqual(self.run_block(shell, node, f'dram_event_state {line!r}'), expected)
+
+    def test_wake_state(self):
+        cases = {
+            "  mWakefulness=Awake": "on",
+            "  mWakefulness=Dreaming": "on",
+            "  mWakefulness=Dozing": "off",
+            "  mWakefulness=Asleep": "off",
+            "": "",
+        }
+        with tempfile.TemporaryDirectory() as td:
+            node = fake_node(td)
+            for shell in SHELLS:
+                for power, expected in cases.items():
+                    with self.subTest(shell=shell, power=power):
+                        self.assertEqual(self.run_block(shell, node, "dram_wake_state", power), expected)
+
+    def test_khz_fits_32bit(self):
+        with tempfile.TemporaryDirectory() as td:
+            node = fake_node(td)
+            out = self.run_block("dash", node, 'echo "$(dram_khz 4266000000)|$(dram_khz 12)|$(dram_khz x)|"')
+            self.assertEqual(out, "4266000|0||")
+
+    def test_daemon_follows_screen_events(self):
+        """End to end: fake logcat emits off/on/off, the lock follows within the event loop."""
+        for shell in SHELLS:
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as td:
+                tdp = pathlib.Path(td)
+                node = fake_node(td)
+                data = tdp / "fod"
+                data.mkdir()
+                mod = tdp / "mod"
+                mod.mkdir()
+                (mod / "dramlock.sh").write_text(read("dramlock.sh"))
+                bindir = tdp / "bin"
+                bindir.mkdir()
+                stubs = {
+                    "getprop": "#!/bin/sh\necho 1\n",
+                    "dumpsys": "#!/bin/sh\necho '  mWakefulness=Awake'\n",
+                    "logcat": (
+                        "#!/bin/sh\n"
+                        "echo '--------- beginning of events'\n"
+                        "sleep 0.8; echo 'I/screen_toggled( 1580): 0'\n"
+                        "sleep 0.8; echo 'I/screen_toggled( 1580): 1'\n"
+                        "sleep 0.8; echo 'I/screen_toggled( 1580): 0'\n"
+                        "exec sleep 60\n"
+                    ),
+                }
+                for name, body in stubs.items():
+                    (bindir / name).write_text(body)
+                    (bindir / name).chmod(0o755)
+                env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}",
+                           DRAMLOCK_D=str(data), DRAMLOCK_NODE=str(node), DRAMLOCK_BOOT_DELAY="0")
+                proc = subprocess.Popen([shell, str(mod / "dramlock.sh")], env=env,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                        start_new_session=True)
+                seen = []
+                try:
+                    deadline = time.time() + 4.5
+                    while time.time() < deadline:
+                        v = (node / "max_freq").read_text().strip()
+                        if v and (not seen or seen[-1] != v):
+                            seen.append(v)
+                        time.sleep(0.05)
+                finally:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=5)
+                log = (data / "dram.log").read_text()
+                self.assertEqual(
+                    seen,
+                    ["4266000000", "1866000000", "4266000000", "1866000000"],
+                    log,
+                )
+                self.assertEqual((node / "governor").read_text().strip(), "userspace")
+                self.assertEqual((data / "dram.orig").read_text().split()[0], "mtk-dvfsrc-net")
+                self.assertIn("screen off (event)", log)
+                self.assertIn("screen on (event)", log)
+
+    def test_wiring(self):
+        self.assertIn("dramlock.sh", read("service.sh"))
+        customize = read("customize.sh")
+        self.assertIn('cat > "$DATA/fod/dram.conf"', customize)
+        self.assertIn("OFF_FREQ=half", customize)
+        self.assertIn('"$DATA/service.d/lock_dram.sh"', customize)
+        self.assertIn('"$f.disabled_by_x6886"', customize)
+        self.assertIn("single_instance dramlock", read("dramlock.sh"))
+        self.assertIn("dramlock.sh status", read("diag.sh"))
 
 
 if __name__ == "__main__":

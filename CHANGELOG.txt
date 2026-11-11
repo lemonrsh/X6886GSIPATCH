@@ -1,3 +1,29 @@
+v14.1 (2026-11-11) - DRAM lock: max with the screen on, half with the screen off
+* NEW dramlock.sh (launched by service.sh) for the MediaTek DVFSRC devfreq node
+  /sys/class/devfreq/mtk-dvfsrc-devfreq:
+  - screen on  -> userspace governor, min = max = target = 4266 MHz (top step)
+  - screen off -> 1866 MHz ("half": largest step <= 4266/2; 2133 MHz is not a real step)
+  - "off" = not interactive, i.e. Asleep or AOD/Dozing. Screen-on is applied when the wake-up
+    STARTS (screen_toggled=1 from PhoneWindowManager.startedWakingUp), before the panel is lit.
+* Event driven, no fast polling: logcat follows the screen_toggled event tag. Events, a
+  60 s reconcile tick (dumpsys power wakefulness; re-asserts the lock if the power HAL or a
+  thermal event undid it) and manual reloads all go through ONE fifo reader, so no two writers
+  ever race on the devfreq nodes.
+* Writes are ordered min -> lowest step, max, set_freq, min, so the lock moves both up and
+  down even on kernels that reject min > max. Frequencies are compared in kHz because
+  4266000000 does not fit in mksh's 32-bit arithmetic.
+* Config /data/adb/fod/dram.conf (created once, never overwritten): DRAM_LOCK, ON_FREQ
+  (max|min|Hz), OFF_FREQ (half|min|max|Hz), RECONCILE_S. Apply without reboot:
+  sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/dramlock.sh reload
+  DRAM_LOCK=0 + reload restores the stock governor/min/max saved at boot (dram.orig).
+* 'dramlock.sh status' prints governor, cur/min/max, steps, config and screen state; diag.sh
+  includes it and dram.log.
+* The installer parks a manual always-max /data/adb/service.d/lock_dram.sh (renamed to
+  lock_dram.sh.disabled_by_x6886) so it cannot fight the screen-off step.
+* Tests: DRAM step resolution, lock order up/down, event parsing, wakefulness mapping and an
+  end-to-end fake-logcat run (bash, dash).
+* Version bumped to v14.1 / versionCode 133.
+
 v14 (2026-11-10) - GPU governor (gpufix) removed
 * Removed gpufix.sh and gpumod/ (standalone GPU-DVFS-X6886 module) so GPU DVFS tuning
   can be maintained as a separate module project (the last combined release remains on

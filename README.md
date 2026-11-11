@@ -1,6 +1,26 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v14.1: DRAM lock (screen on = max, screen off = half)
+
+`dramlock.sh` locks the MediaTek DVFSRC DRAM clock (`/sys/class/devfreq/mtk-dvfsrc-devfreq`):
+
+| Screen | DRAM | Notes |
+| --- | --- | --- |
+| On | 4266 MHz (top step) | applied as soon as the wake-up starts |
+| Off / AOD | 1866 MHz | "half" = largest step at or below 4266 / 2 |
+
+- It follows the framework's `screen_toggled` event, so there's no fast polling. Every 60 s it
+  checks `dumpsys power` and re-applies the lock if the power HAL or thermal code undid it.
+- Config: `/data/adb/fod/dram.conf` (`DRAM_LOCK`, `ON_FREQ`, `OFF_FREQ`, `RECONCILE_S`).
+  To apply changes without a reboot:
+  `su -c sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/dramlock.sh reload`.
+- Status: `su -c sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/dramlock.sh status`.
+- `DRAM_LOCK=0` followed by `reload` gives control back to the stock governor.
+- Holding DRAM at max while the screen is on uses more battery and makes the phone warmer.
+- The installer renames an old manual `/data/adb/service.d/lock_dram.sh` to
+  `lock_dram.sh.disabled_by_x6886` so it can't fight the screen-off step.
+
 ## v14: GPU governor (`gpufix`) removed
 
 - Removed `gpufix.sh` and the bundled `gpumod/` standalone GPU module so GPU DVFS
