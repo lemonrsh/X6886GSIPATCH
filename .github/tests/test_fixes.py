@@ -108,10 +108,15 @@ class Dt2wRemovalTests(unittest.TestCase):
 
 class HbmSafetyTests(unittest.TestCase):
     def setUp(self):
-        self.block = marked_block(
-            read("fod_service.sh"),
-            "# --- HBM safety helpers (regression-tested by .github/tests/test_fixes.py) ---",
-            "# --- end HBM safety helpers ---",
+        self.block = (
+            'REFRESH_FOD_TOKEN=""\n'
+            'refresh_fod_begin() { :; }\n'
+            'refresh_fod_end() { :; }\n'
+            + marked_block(
+                read("fod_service.sh"),
+                "# --- HBM safety helpers (regression-tested by .github/tests/test_fixes.py) ---",
+                "# --- end HBM safety helpers ---",
+            )
         )
 
     def test_stale_watchdog_cannot_disable_newer_hbm(self):
@@ -534,7 +539,7 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
                         time.sleep(0.05)
                 finally:
                     os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait(timeout=5)
+                    proc.communicate(timeout=5)
                 log = (data / "dram.log").read_text()
                 self.assertEqual(
                     seen,
@@ -602,7 +607,7 @@ dumpsys() {{ [ "$1" = power ] && printf '%s\\n' "$POWER_OUT"; }}
                     self.assertEqual((node / "max_freq").read_text().strip(), "1866000000")
                 finally:
                     os.killpg(proc.pid, signal.SIGKILL)
-                    proc.wait(timeout=5)
+                    proc.communicate(timeout=5)
                 log = (data / "dram.log").read_text()
                 self.assertIn("screen on (panel)", log)
                 self.assertIn("screen off (confirm)", log)

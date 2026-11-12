@@ -1,5 +1,24 @@
-X6886 GSI PATCH by lemonrsh — v14.3 (see CHANGELOG.txt; original base v10.7: 120 Hz always + FOD stability)
+X6886 GSI PATCH by lemonrsh — v14.4 (versionCode 136)
 ====================================
+
+NEW: 0.4x Android window, transition and animator-duration scales (global).
+144 Hz normally; 120 Hz for fingerprint authentication, enrolment, HBM and
+screen-off FOD replay. Successful completion/cancellation returns to 144 Hz
+when no finger/glow/replay is held. Flash in Magisk and reboot; no setup needed.
+
+Compatible same-resolution/HWC-group 144/120 modes are discovered automatically.
+If 144 Hz is unavailable/incompatible, the controller stays at 120 Hz. Without a
+120 Hz mode it leaves Android's policy alone. Unsupported SurfaceFlinger commands
+fall back to framework votes; diagnostics stay in refresh.log, not pop-up errors.
+FOD requests a token-specific 120 Hz acknowledgement before HBM/input replay;
+this wait is bounded (about 300 ms), never an indefinite capture blocker.
+Mode requests have one writer, including early boot and foreground-user changes.
+
+The physical display/ROM controls transition latency and whether switching is
+truly seamless. Not on-device validated: zero flicker/biometric errors cannot be
+guaranteed. Custom app animations/FPS limits may ignore system preferences.
+Original settings are saved once and restored on uninstall when still owned by
+the module. The removal reboot clears the display pin. See README.md for details.
 
 This release removes the non-working screen-on-time (SOT) watcher completely.
 It does NOT calculate, reset, repair, or modify Android Settings battery history.
@@ -12,7 +31,9 @@ project. Screen-off FOD (fod_service.sh / sofod_touch.sh) remains active.
 Preserved components (carried forward from v10.4):
 * X6886 Goodix fingerprint HAL patch / FOD bridge and HBM handling
 * Improved screen-off FOD touch replay: faster first retry, up to four verified attempts, input-node re-detection, and guaranteed touch release
-* Fixed 120 Hz refresh at all times (144 Hz and fingerprint switching removed)
+* 144 Hz normal / 120 Hz fingerprint refresh (v14.4; replaces the old always-120 policy)
+* 0.4x global framework animations (v14.4)
+* Screen-aware DRAM lock (4266 MHz on / 1866 MHz off)
 * SurfaceFlinger and background performance tweaks
 * Download Lag Fix
 * Messenger / Google Play services background handling
@@ -29,8 +50,8 @@ standalone modules to avoid duplicate services. The module ID is unchanged, so
 this is an in-place update. Keep a copy of your current ZIP in case you need
 to roll back.
 
-Configs: /data/adb/fod/hbm.conf, refresh.conf, gsi.conf, dlfix.conf, and
-sofod_touch.conf (optional). Logs are in /data/adb/fod/.
+Configs: /data/adb/fod/hbm.conf, refresh.conf, gsi.conf, dlfix.conf, dram.conf,
+and sofod_touch.conf (optional). Logs are in /data/adb/fod/.
 
 Diagnostics: run
   su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh'
@@ -52,5 +73,8 @@ v11.2+
 ------
 Event-driven FOD waits (optional), adaptive download-lag fix, lighter refresh controller, and cleanup. Double-tap-to-wake (dt2w.sh / dt2w.conf) and gpufix have been removed. Full history in CHANGELOG.txt. Config: /data/adb/fod/bg.conf. Collect logs with:
   su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh bundle'
-If you remove the module, Smooth Display may stay pinned at 120 Hz: run
-  settings delete system min_refresh_rate; settings delete system peak_refresh_rate
+v14.4 restores saved animation and refresh settings on uninstall. If the saved
+refresh settings came from an old always-120 release, reset Smooth Display in
+Settings to return to ROM defaults (or, as root for the current user):
+  settings --user current delete system min_refresh_rate
+  settings --user current delete system peak_refresh_rate

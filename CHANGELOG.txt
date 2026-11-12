@@ -1,3 +1,37 @@
+v14.4 (2026-11-12) - 0.4x animations; 144 Hz normal / 120 Hz FOD
+* Set all three Android framework animation scales globally to 0.4: window,
+  transition and animator duration. Apply after boot, retry provider failures,
+  reconcile every 60 s. Custom app animation engines may ignore these scales.
+* Replace the fixed-120 controller with one 144/120 writer. Discover real mode IDs
+  from SurfaceFlinger, prefer the internal display and same resolution/HWC group;
+  never reuse the old refresh.cache. If a compatible 144 Hz mode is unavailable,
+  keep 120 Hz; if 120 Hz is unavailable, leave Android's policy untouched.
+* Follow the bundled bridge's authentication/enrolment/detect/UI-ready, pointer,
+  cancellation, completion and session-close events. Hold 120 Hz between failed
+  fingerprint attempts, return to 144 Hz after the session and active holds end.
+  sys.phh.oplus.fppress is a 100 ms fallback; helper leases are checked every 50 ms.
+* HBM and SOFOD acquire boot-scoped, token-specific leases before glow/key195 or
+  synthetic input. A bounded (~300 ms) ACK wait cannot reuse an old press's ACK
+  and cannot block capture indefinitely. Old HBM watchdogs cannot release a newer
+  refresh lease. Helper leases expire after 8 s, silent sessions after 5 min.
+* Keep min/peak refresh votes in sync with the selected rate (safe write order).
+  No separate boot-completed settings writer can overwrite a FOD downshift.
+  Handle foreground-user changes, missed initial auth logs and SF/HAL restarts.
+  Unsupported SurfaceFlinger pins use framework votes without toast/error spam.
+* Save original global/per-user settings once. Stop writers on uninstall; restore
+  settings still owned by this module. If the provider is unavailable during
+  early-boot removal, a self-removing service.d job completes restoration after
+  boot. The removal reboot clears the SF pin. Installer migrates the old
+  always-120 config; no setup commands required.
+* Preserve HBM MAX_S/temperature cutoff, Goodix HAL hash checks, DRAM screen lock,
+  and existing performance/download fixes. No new battery/sysfs/thermal bypasses.
+* 57 host regression tests pass under bash, dash and BusyBox ash, including mocked
+  Android end-to-end tests. Run all test files before releases and in PR checks.
+  Remove tracked Python bytecode; ignore generated ZIPs.
+* Hardware caveat: the ROM/panel must expose 144 Hz; software tests cannot prove
+  physical switching latency, zero flicker or error-free FOD on every GSI.
+* Version bumped to v14.4 / versionCode 136.
+
 v14.3 (2026-11-11) - DRAM lock: instant switch on the X6886 GSI (real screen source)
 * Field report (v14.2 status/log): only the 60 s reconcile ever switched the DRAM. The
   screen_toggled event never arrived, and the panel nodes read "11" (lit) with the screen

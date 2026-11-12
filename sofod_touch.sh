@@ -18,6 +18,10 @@ FLAG=$D/.sofod_busy
 mkdir -p "$D"
 # Guard before touching logs/input: duplicate watchers can replay the same FOD touch twice.
 [ -f "$MODDIR/lib.sh" ] && . "$MODDIR/lib.sh" && single_instance sofod_touch
+refresh_fod_begin() { :; }
+refresh_fod_end() { :; }
+REFRESH_FOD_TOKEN=""
+[ -f "$MODDIR/refresh_fod.sh" ] && . "$MODDIR/refresh_fod.sh"
 [ -f "$D/sofod_touch.conf" ] && . "$D/sofod_touch.conf"
 
 log() {
@@ -72,6 +76,8 @@ touch_down() {
 }
 
 refire() {
+  # Acquire 120 Hz before waking/replaying, including the unregistered-touch path.
+  refresh_fod_begin sofod
   # HAL log coordinates are pixels; mtk-tpd reports 16 units per pixel on X6886.
   PX=$(( $1 * 16 ))
   PY=$(( $2 * 16 ))
@@ -130,6 +136,7 @@ refire() {
     touch_up
     log "WARNING: no press confirmation after $TRIES attempts"
   fi
+  refresh_fod_end sofod "$REFRESH_FOD_TOKEN"
   rm -f "$FLAG"
 }
 

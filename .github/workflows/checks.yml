@@ -31,4 +31,4 @@ jobs:
 
       - name: Reliability regression tests
         shell: bash
-        run: python3 .github/tests/test_fixes.py
+        run: python3 -B -m unittest discover -s .github/tests -p 'test_*.py' -v

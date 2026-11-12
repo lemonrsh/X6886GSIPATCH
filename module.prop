@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh v14.3 FIX
-version=v14.3
-versionCode=135
+name=X6886 GSI PATCH by lemonrsh v14.4 FIX
+version=v14.4
+versionCode=136
 author=lemonrsh
-description=X6886 GSI patch v14.3: DRAM lock (4266 MHz screen on, 1866 MHz screen off, instant seamless switch), safer HBM watchdog cancellation, single-instance FOD/SOFOD helpers, AOD-aware idle dexopt, fixed 120 Hz refresh, download lag fix; GPU governor and DT2W removed; retains thermal cutoff and performance defaults.
+description=X6886 GSI patch v14.4: 0.4x framework animations, 144 Hz normally with 120 Hz for FOD/enrolment/SOFOD, compatible-mode detection and reversible settings; DRAM lock (4266 MHz on / 1866 MHz off), safe HBM watchdog, AOD-aware idle dexopt and download lag fix. GPU governor and DT2W removed; thermal cutoff retained.

@@ -65,12 +65,16 @@ LEAD_S=0.04
 CONF
 fi
 [ "$SKIPHAL" = 1 ] && sed -i 's/^HAL_PATCH=.*/HAL_PATCH=0/' "$DATA/fod/hbm.conf"
-# v10.6: fixed 120 Hz at all times; discard legacy 144/120 fingerprint switching config.
+# v14.4: migrate the old always-120 controller. Mode IDs are resolved fresh from
+# SurfaceFlinger; never reuse a cached ID across a reboot/HAL/ROM update.
 cat > "$DATA/fod/refresh.conf" <<'CONF'
-TARGET_HZ=120
+# 144 Hz normally / 120 Hz during FOD (same-resolution, same-group modes only).
 RECONCILE_S=120
 SETTINGS_RATE=1
 CONF
+rm -f "$DATA/fod/refresh.cache" "$DATA/fod/.refresh_want" "$DATA/fod/.ui_stopping"
+# A reinstallation owns the settings again; cancel only our deferred uninstall job.
+rm -f "$DATA/service.d/x6886_restore_settings.sh" "$DATA/fod/.settings_restore_lib.sh"
 if [ ! -f "$DATA/fod/gsi.conf" ]; then
 cat > "$DATA/fod/gsi.conf" <<'CONF'
 PERF_GOVERNOR=0   # 1 = pin CPU policies to the performance governor (more heat and battery drain)
@@ -137,6 +141,8 @@ ui_print "- Configs in /data/adb/fod: hbm.conf refresh.conf gsi.conf dlfix.conf 
 ui_print "- v10.5: SOT watcher removed; Settings battery history/database are untouched."
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log dram.log sofod_touch.log gsi.log"
-ui_print "- v10.6: fixed 120 Hz always; 144 Hz/FOD switching removed."
-ui_print "- v14.3: DRAM lock - 4266 MHz screen on / 1866 MHz screen off, instant + seamless. dram.conf"
+ui_print "- v14.4: Android animation scales = 0.4x (window / transition / animator)."
+ui_print "- 144 Hz normal / 120 Hz fingerprint, enrolment and screen-off FOD."
+ui_print "- Uses compatible display modes; falls back to 120 Hz if 144 Hz is unavailable."
+ui_print "- DRAM lock - 4266 MHz screen on / 1866 MHz screen off. dram.conf"
 ui_print "- Reboot to apply."

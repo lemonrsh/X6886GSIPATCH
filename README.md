@@ -1,6 +1,56 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v14.4: 0.4× animations, 144 Hz normal / 120 Hz fingerprint
+
+Flash the release ZIP in Magisk and **reboot**. No commands or volume-key choices
+are needed, including when upgrading from the old always-120-Hz release.
+
+- **0.4× Android animations:** window, transition and animator-duration scales are
+  set globally after boot and reconciled every 60 seconds. This covers framework
+  animations for all users; an app's custom animation engine may ignore Android's
+  scales.
+- **144 Hz normally, 120 Hz for FOD:** the bundled bridge's authentication,
+  enrolment and interaction/UI-ready events switch to 120 Hz; cancellation,
+  session close and successful authentication/enrolment restore 144 Hz after any
+  held finger/HBM/SOFOD request has ended. Failed recognition keeps the current
+  fingerprint session at 120 Hz for the next attempt.
+- HBM and screen-off touch replay request 120 Hz **before** enabling the glow or
+  replaying input. A token-specific acknowledgement prevents a previous press's
+  120-Hz result being reused. The wait is bounded to about 300 ms and fails open
+  if the controller is unavailable, so it cannot block fingerprint capture.
+- One controller serialises all mode changes and matching min/peak framework
+  settings, including early boot, foreground-user changes and SurfaceFlinger
+  restarts. Shared FOD leases are checked every 50 ms; the press property is a
+  100-ms fallback. These are software check intervals, not guaranteed panel
+  transition times. Slow reconciliation defaults to 120 seconds.
+- Mode IDs are discovered fresh, never guessed or reused from a previous boot.
+  A same-resolution, same-HWC-group 144/120 pair is used to avoid disruptive
+  modesets (older dumps without group metadata use a same-resolution pair).
+  Without a compatible 144-Hz mode it stays at 120 Hz; without a 120-Hz mode it
+  leaves Android's display policy alone. Unsupported SurfaceFlinger pins fall
+  back to framework votes, with diagnostic logging rather than toasts/dialogs.
+- Original animation and per-user refresh settings are saved once and restored
+  on uninstall if they still match this module's last write. If Magisk removes
+  the module before Android's settings provider starts, a module-owned one-shot
+  `service.d/x6886_restore_settings.sh` finishes restoration after boot and removes
+  itself. The removal reboot also clears the SurfaceFlinger pin. If upgrading from
+  an older module that already pinned 120 Hz, that existing value is the saved
+  original; reset Smooth
+  Display manually if you want ROM defaults instead.
+
+**Limits:** the panel/ROM must expose 144 Hz; this cannot make an FPS-capped app
+render at 144 FPS, bypass thermal/display-driver limits, or guarantee zero flicker
+or biometric errors on every GSI. Host regression tests are not on-device
+validation. Test lockscreen unlock, app biometric prompts, enrolment and screen-off
+FOD after flashing; keep the previous ZIP for rollback.
+
+Config: `/data/adb/fod/refresh.conf` (`RECONCILE_S`, `SETTINGS_RATE`). Diagnostics:
+`su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh'`.
+Lost bridge streams/HAL restarts clear session state, FOD helper leases expire
+within 8 seconds, and silent bridge sessions expire after 5 minutes without an
+event. The property/next touch can still request 120 Hz after that safety timeout.
+
 ## v14.3: DRAM lock (screen on = max, screen off = half)
 
 `dramlock.sh` locks the MediaTek DVFSRC DRAM clock (`/sys/class/devfreq/mtk-dvfsrc-devfreq`):

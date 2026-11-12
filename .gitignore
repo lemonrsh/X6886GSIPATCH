@@ -1,0 +1,4 @@
+__pycache__/
+*.py[cod]
+# Release ZIPs are built outside the checkout / attached to GitHub Releases.
+*.zip

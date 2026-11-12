@@ -11,10 +11,13 @@ echo "== top threads"; top -H -b -n 1 -m 15 2>/dev/null | head -25
 echo "== module processes"; ps -A -o PID,NI,TIME,ARGS 2>/dev/null | grep -E 'getevent|logcat|fod_service|sofod|perf_tweaks|refresh.sh|dlfix|dramlock' | grep -v grep
 echo "== wakefulness: $(dumpsys power 2>/dev/null | grep -m1 mWakefulness=)"
 echo "== touch node: $(for p in /sys/class/input/event*; do echo "${p##*/}=$(cat $p/device/name 2>/dev/null)"; done | tr '\n' ' ')"
-echo "== refresh settings: min=$(settings get system min_refresh_rate 2>/dev/null) peak=$(settings get system peak_refresh_rate 2>/dev/null)"
+echo "== refresh user=$(cmd activity get-current-user 2>/dev/null) min=$(settings --user current get system min_refresh_rate 2>/dev/null) peak=$(settings --user current get system peak_refresh_rate 2>/dev/null)"
+echo "== refresh ACK (boot ID / requested Hz / HBM token / SOFOD token): $(cat "$D/.refresh_applied" 2>/dev/null)"
+echo "== fingerprint session lease: $(cat "$D/.refresh_session" 2>/dev/null)"
+echo "== animation scales: window=$(settings get global window_animation_scale 2>/dev/null) transition=$(settings get global transition_animation_scale 2>/dev/null) animator=$(settings get global animator_duration_scale 2>/dev/null)"
 echo "== battery: capacity=$(cat /sys/class/power_supply/battery/capacity 2>/dev/null) temp=$(cat /sys/class/power_supply/battery/temp 2>/dev/null)"
 echo "== DRAM"; sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/dramlock.sh status 2>/dev/null
-echo "== refresh timing (fixed 120 Hz)"; grep -E "start|120 Hz" $D/refresh.log 2>/dev/null | head -8
+echo "== refresh timing (144 Hz normal / 120 Hz FOD)"; grep -E "start|modes:|Hz requested|unavailable|retaining" "$D/refresh.log" 2>/dev/null | tail -12
 for l in refresh dlfix dram sofod_touch hbm gsi safe hal; do echo "== $l.log (last 25)"; tail -n 25 $D/$l.log 2>/dev/null; done
 
 # bundle: sh diag.sh bundle  -> /sdcard/x6886_diag.tar.gz (all logs + this report) to paste/share in one go

@@ -6,6 +6,12 @@ MODDIR=${0%/*}
 [ -f "$MODDIR/sofod_touch.sh" ] && ( while true; do sh "$MODDIR/sofod_touch.sh" >/dev/null 2>&1; sleep 3; done & )
 NODE=/sys/kernel/tran_display/lcm_hbm_state
 D=/data/adb/fod; LOG=$D/hbm.log
+# Best-effort handshake: request 120 Hz before HBM/key195, never block capture
+# indefinitely if the refresh service/ROM does not support the pin.
+refresh_fod_begin() { :; }
+refresh_fod_end() { :; }
+REFRESH_FOD_TOKEN=""
+[ -f "$MODDIR/refresh_fod.sh" ] && . "$MODDIR/refresh_fod.sh"
 ENABLED=1; HAL_PATCH=12; MAX_S=3; MAX_N=60; TEMP_MAX=430; WAIT_N=30; KEYLOG=40; INJECT195=1; LEAD_S=0.04
 WAIT_SO=80      # v7: wait (x10 ms) for SystemUI to report the press when it was injected by sofod_touch (screen-off wake is slow)
 PROP_WAIT=0     # v11.2.1: 1 = experimental resetprop -w waits instead of polling getprop (default OFF = v11.1 behaviour)
@@ -94,6 +100,7 @@ hbm_cancel() {
 hbm_timeout() {
   [ "$(cat "$HBM_TOKEN_FILE" 2>/dev/null)" = "$1" ] || return 0
   echo 0 > "$NODE"
+  refresh_fod_end hbm "$REFRESH_FOD_TOKEN"
 }
 hbm_start_watchdog() {
   ( sleep "$MAX_S"; hbm_timeout "$1" ) & WD=$!
@@ -101,11 +108,13 @@ hbm_start_watchdog() {
 hbm_off() {
   hbm_cancel
   echo 0 > "$NODE"
+  refresh_fod_end hbm "$REFRESH_FOD_TOKEN"
   ON=0
 }
 hbm_on() {
   if hot; then log "skip: battery hot"; return 1; fi
   hbm_cancel
+  refresh_fod_begin hbm
   echo 1 > "$NODE"
   ON=1
   hbm_start_watchdog "$HBM_TOKEN"
