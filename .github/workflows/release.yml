@@ -31,7 +31,7 @@ jobs:
 
       - name: Reliability regression tests
         shell: bash
-        run: python3 .github/tests/test_fixes.py
+        run: python3 -B -m unittest discover -s .github/tests -p 'test_*.py' -v
 
       - name: Validate module and prepare release
         id: module
@@ -41,7 +41,8 @@ jobs:
 
           for file in module.prop META-INF/com/google/android/update-binary \
                       META-INF/com/google/android/updater-script \
-                      customize.sh post-fs-data.sh service.sh; do
+                      customize.sh post-fs-data.sh service.sh refresh.sh \
+                      refresh_fod.sh animations.sh settings_state.sh lib.sh uninstall.sh; do
             if [[ ! -f "$file" ]]; then
               echo "::error::Missing required module file: $file"
               exit 1
@@ -117,6 +118,12 @@ jobs:
               "customize.sh",
               "post-fs-data.sh",
               "service.sh",
+              "refresh.sh",
+              "refresh_fod.sh",
+              "animations.sh",
+              "settings_state.sh",
+              "lib.sh",
+              "uninstall.sh",
           }
           with zipfile.ZipFile(sys.argv[1]) as archive:
               names = archive.namelist()
@@ -165,6 +172,11 @@ jobs:
 
           The installer still checks that the device has a supported Goodix HAL.
           EOF
+          # Include the current changelog entry, including hardware/test limits.
+          {
+            printf '\n## Changes\n\n'
+            awk 'NR == 1 { print "**" $0 "**"; next } /^v[0-9]/ { exit } { print }' CHANGELOG.txt
+          } >> "$NOTES"
 
           # A rerun for the same commit refreshes its existing release instead
           # of failing on an existing tag or creating a duplicate release.

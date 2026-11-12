@@ -1,6 +1,6 @@
 #!/system/bin/sh
 MODDIR=${0%/*}
-# ---- v10: FIRST THING, before anything else: start the fixed 120 Hz refresh controller ----
+# ---- FIRST THING: start the 144 Hz normal / 120 Hz FOD refresh controller ----
 # It waits for SurfaceFlinger by itself (never gives up, no boot_completed dependency), runs at nice -8 and is a
 # single instance (service.sh launches it again as a fallback; the second one just exits).
 if [ -f "$MODDIR/refresh.sh" ]; then
