@@ -15,7 +15,7 @@ REFRESH_FOD_TOKEN=""
 ENABLED=1; HAL_PATCH=12; MAX_S=3; MAX_N=60; TEMP_MAX=430; WAIT_N=30; KEYLOG=40; INJECT195=1; LEAD_S=0.04
 WAIT_SO=80      # v7: wait (x10 ms) for SystemUI to report the press when it was injected by sofod_touch (screen-off wake is slow)
 PROP_WAIT=0     # v11.2.1: 1 = experimental resetprop -w waits instead of polling getprop (default OFF = v11.1 behaviour)
-FAST_FILTER=1   # v7: pre-filter touch events with grep (0 = old slow shell loop)
+FAST_FILTER=1   # native, flushed touch-event filtering (0 = old slow shell loop)
 mkdir -p $D
 [ -f $D/hbm.conf ] && . $D/hbm.conf
 while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done
@@ -30,7 +30,7 @@ if command -v magiskpolicy >/dev/null 2>&1; then
   setprop ctl.restart vendor.fingerprint-default
   sleep 4
 fi
-log() { echo "$(date +%T.%N | cut -c1-12) $*" >> $LOG; }
+log() { _hbm_time=$(date +%T.%N); printf '%.12s %s\n' "$_hbm_time" "$*" >> "$LOG"; }
 : > $LOG
 # 1) make sure the running HAL really uses the patched library
 if [ "$HAL_PATCH" != 0 ]; then
@@ -41,37 +41,87 @@ if [ "$HAL_PATCH" != 0 ]; then
   else log "HAL lib differs (have=$HAVE) -> restarting HAL"; setprop ctl.restart vendor.fingerprint-default; sleep 3; fi
 fi
 # 1b) HAL watchdog: after a long sleep the HAL can be restarted by the system; make sure the new process still runs the patched lib
+# --- HAL watchdog (host-tested in test_low_cpu.py) ---
 if [ "$HAL_PATCH" != 0 ]; then
   ( LASTP=$(pidof android.hardware.biometrics.fingerprint-service | cut -d' ' -f1); R=0
+    LASTSTAMP=""; if process_stamp "$LASTP"; then LASTSTAMP=$PROC_STAMP; fi
     while true; do
       sleep 15
+      # The healthy process needs no process-table scan. Fall back to pidof
+      # when it exits, is replaced (including PID reuse), or cannot be checked.
+      if process_unchanged "$LASTP" "$LASTSTAMP"; then continue; fi
       P=$(pidof android.hardware.biometrics.fingerprint-service | cut -d' ' -f1)
-      [ -n "$P" ] && [ "$P" != "$LASTP" ] || continue
-      sleep 3; log "HAL pid changed $LASTP -> $P"; LASTP=$P
+      [ -n "$P" ] || continue
+      PSTAMP=""; if process_stamp "$P"; then PSTAMP=$PROC_STAMP; fi
+      if [ "$P" = "$LASTP" ] && { [ -z "$PSTAMP" ] || [ "$PSTAMP" = "$LASTSTAMP" ]; }; then continue; fi
+      sleep 3; log "HAL pid changed $LASTP -> $P"; LASTP=$P; LASTSTAMP=$PSTAMP
       WANT=$(sha256sum "$MODDIR/libs/libgf_hal.p$HAL_PATCH.so" | cut -d' ' -f1)
       HAVE=$(sha256sum /proc/$P/root/odm/lib64/libgf_hal.so 2>/dev/null | cut -d' ' -f1)
       if [ "$HAVE" != "$WANT" ] && [ $R -lt 3 ]; then
         R=$((R+1)); log "restarted HAL does not run patched lib -> restart #$R"
         setprop ctl.restart vendor.fingerprint-default; sleep 4
         LASTP=$(pidof android.hardware.biometrics.fingerprint-service | cut -d' ' -f1)
+        LASTSTAMP=""; if process_stamp "$LASTP"; then LASTSTAMP=$PROC_STAMP; fi
       fi
     done ) &
 fi
+# --- end HAL watchdog ---
 [ "$ENABLED" = 1 ] || { log "HBM driver disabled by config"; exit 0; }
 # 2) HBM + FOD key driver (v7)
 # v6 parsed EVERY touch event line in a shell loop (mksh reads pipes byte by byte -> tens of thousands of syscalls per
 # second while scrolling) and polled getprop 30x on every touch-down. That load competed with SurfaceFlinger/UI.
-# v7: grep filters the stream in C so the shell only sees BTN_TOUCH / key 195; the fppress poll is 2x lighter.
-find_dev() { for d in /sys/class/input/event*; do [ "$(cat $d/device/name 2>/dev/null)" = "mtk-tpd" ] && { echo /dev/input/${d##*/}; return; }; done; }
+# Native grep/awk filtering keeps the shell on BTN_TOUCH / key 195 only; fppress timing is unchanged.
+# --- FOD input helpers (host-tested in test_low_cpu.py) ---
+find_dev() {
+  for d in /sys/class/input/event*; do
+    _fd_name=""; { IFS= read -r _fd_name < "$d/device/name"; } 2>/dev/null
+    [ "$_fd_name" = mtk-tpd ] && { echo "/dev/input/${d##*/}"; return 0; }
+  done
+  return 1
+}
+hot() {
+  t=""; { IFS= read -r t < /sys/class/power_supply/battery/temp; } 2>/dev/null
+  case "$t" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$t" -ge "$TEMP_MAX" ]
+}
+fod_filter_init() {
+  FILTER_OK=0; FILTER_KIND=none; FILTER_BB=""
+  [ "$FAST_FILTER" = 1 ] || return 0
+  if printf '0001\n' | grep --line-buffered -E '0001|x' >/dev/null 2>&1; then
+    FILTER_KIND=grep
+  else
+    for _fb in /data/adb/magisk/busybox "$(command -v busybox 2>/dev/null)"; do
+      [ -n "$_fb" ] && [ -x "$_fb" ] || continue
+      if printf '' | "$_fb" awk 'BEGIN { fflush() }' >/dev/null 2>&1; then
+        FILTER_KIND=busybox; FILTER_BB=$_fb; break
+      fi
+    done
+    # fflush alone does not disable mawk's block-buffered INPUT. Request its
+    # interactive mode; implementations rejecting that option use the old path.
+    if [ "$FILTER_KIND" = none ] && printf '' | awk -W interactive 'BEGIN { fflush() }' >/dev/null 2>&1; then
+      FILTER_KIND=awk
+    fi
+  fi
+  [ "$FILTER_KIND" = none ] || FILTER_OK=1
+  return 0
+}
+fod_filter_events() {
+  # Never feed raw coordinate/SYN traffic to the shell just because Toybox or
+  # BusyBox grep lacks GNU --line-buffered. fflush keeps down/up events prompt.
+  case "$FILTER_KIND" in
+    grep) grep --line-buffered -E '0001 (014a|00c3) ' ;;
+    awk) awk -W interactive '/0001 (014a|00c3) / { print; fflush() }' ;;
+    busybox) "$FILTER_BB" awk '/0001 (014a|00c3) / { print; fflush() }' ;;
+  esac
+}
+# --- end FOD input helpers ---
 DEV=""; for i in 1 2 3 4 5 6 7 8 9 10; do DEV=$(find_dev); [ -n "$DEV" ] && break; sleep 2; done
 [ -n "$DEV" ] || { log "touch device mtk-tpd not found"; exit 1; }
 [ -w $NODE ] || { log "node $NODE not writable"; exit 1; }
 which sendevent >/dev/null 2>&1 || { log "sendevent missing -> key injection disabled"; INJECT195=0; }
-FILTER_OK=0
-if [ "$FAST_FILTER" = 1 ] && echo 0001 | grep --line-buffered -E '0001|x' >/dev/null 2>&1; then FILTER_OK=1; fi
+fod_filter_init
 SOFLAG=$D/.sofod_busy
 GPID=$D/.getevent.pid
-hot() { t=$(cat /sys/class/power_supply/battery/temp 2>/dev/null); [ -n "$t" ] && [ "$t" -ge "$TEMP_MAX" ]; }
 # the HAL's touch thread reads EV_KEY 195: value 1 = finger down (starts capture), value 0 = finger up
 inject() { sendevent $DEV 1 195 $1 >/dev/null 2>&1; sendevent $DEV 0 0 0 >/dev/null 2>&1; }
 [ "$INJECT195" = 1 ] && inject 0
@@ -98,7 +148,9 @@ hbm_cancel() {
   fi
 }
 hbm_timeout() {
-  [ "$(cat "$HBM_TOKEN_FILE" 2>/dev/null)" = "$1" ] || return 0
+  _hbm_current=""
+  [ -r "$HBM_TOKEN_FILE" ] && read -r _hbm_current < "$HBM_TOKEN_FILE"
+  [ "$_hbm_current" = "$1" ] || return 0
   echo 0 > "$NODE"
   refresh_fod_end hbm "$REFRESH_FOD_TOKEN"
 }
@@ -121,7 +173,7 @@ hbm_on() {
   return 0
 }
 # --- end HBM safety helpers ---
-hbm_off; log "driver start dev=$DEV inject195=$INJECT195 fastfilter=$FILTER_OK"
+hbm_off; log "driver start dev=$DEV inject195=$INJECT195 fastfilter=$FILTER_OK backend=$FILTER_KIND"
 # v11.2: event-driven waits. `resetprop -w NAME OLD` blocks until NAME differs from OLD, so the shell no longer
 # forks getprop every 20-30 ms. Auto-detected at start; falls back to the old polling when unsupported.
 PROPWAIT=0
@@ -191,7 +243,7 @@ read_events() {
 start_pipe() {
   # first stage records getevent's own pid (exec keeps it) so only OUR getevent is ever killed
   if [ "$FILTER_OK" = 1 ]; then
-    sh -c 'echo $$ > "$1"; exec getevent "$2"' x "$GPID" "$DEV" 2>/dev/null | grep --line-buffered -E '0001 (014a|00c3) ' | read_events
+    sh -c 'echo $$ > "$1"; exec getevent "$2"' x "$GPID" "$DEV" 2>/dev/null | fod_filter_events | read_events
   else
     sh -c 'echo $$ > "$1"; exec getevent "$2"' x "$GPID" "$DEV" 2>/dev/null | read_events
   fi

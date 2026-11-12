@@ -34,7 +34,8 @@ which sendevent >/dev/null 2>&1 || { log "ERROR: sendevent missing"; exit 1; }
 
 find_dev() {
   for p in /sys/class/input/event*; do
-    [ "$(cat "$p/device/name" 2>/dev/null)" = "mtk-tpd" ] && {
+    _so_name=""; { IFS= read -r _so_name < "$p/device/name"; } 2>/dev/null
+    [ "$_so_name" = "mtk-tpd" ] && {
       echo "/dev/input/${p##*/}"
       return 0
     }
@@ -53,7 +54,7 @@ done
 
 dpms_on() {
   [ ! -r "$DPMS" ] && return 0
-  s=$(cat "$DPMS" 2>/dev/null)
+  s=""; { IFS= read -r s < "$DPMS"; } 2>/dev/null
   case "$s" in On|on|ON) return 0;; *) return 1;; esac
 }
 pressed() { [ "$(getprop sys.phh.oplus.fppress)" = 1 ]; }

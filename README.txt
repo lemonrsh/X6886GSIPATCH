@@ -1,7 +1,26 @@
-X6886 GSI PATCH by lemonrsh — v14.4.1 (versionCode 137)
+X6886 GSI PATCH by lemonrsh — Level 2 v1 (versionCode 138)
 ====================================
 
-HOTFIX v14.4.1: if FOD stayed at 144 Hz, install this update and REBOOT.
+LEVEL 2 v1: lower module overhead and stability; no tuning/feature changes.
+Flash in Magisk and REBOOT. The existing module ID is retained for an in-place
+update, so do not install a second copy alongside the previous version.
+
+* Native, flushed FOD input filtering on more toolsets; no raw coordinate/SYN
+  parsing in the shell when supported, and no added key-event buffering.
+* Builtin reads replace repeated cat processes; bridge parsing avoids per-line
+  subshells. Healthy HAL/SF watchdogs avoid repeated process-table scans.
+* Skip unchanged status/ownership-file writes, not live settings reconciliation
+  or actual display observations. Runtime snapshots are not heartbeat files.
+* Stop the refresh controller/listener on live disable/remove flags, including
+  when the supervisor is waiting for its launched child.
+* Keep 0.4x animations, 144/120 Hz policy, FOD/ACK/replay timings, 4266/1866 MHz
+  DRAM lock, HAL patches, HBM thermal/watchdog limits and all existing tuning.
+
+86 host tests across bash/dash/mksh/BusyBox ash; not a measured phone CPU saving
+or hardware FOD guarantee. Keep the previous ZIP for rollback. See CHANGELOG.txt.
+
+Previous v14.4.1 hotfix (retained):
+If FOD stayed at 144 Hz, this update includes the v14.4.1 controller recovery fix.
 The report showed valid modes (120 Hz ID 0 / 144 Hz ID 1) but no refresh daemon.
 A single supervisor now restarts it after an exit. HAL restarts clear session
 state without killing the listener. Empty/zero Binder replies are not proof:
@@ -10,7 +29,7 @@ only an observed matching active mode and physical/render rate earn a FOD ACK.
 
 Plain-text diagnostics (copy/paste the output; no TAR upload needed):
   su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh refresh'
-This is still host-tested, not on-device confirmation of the hotfix.
+This is host-tested, not on-device confirmation of CPU savings or the hotfix.
 
 NEW: 0.4x Android window, transition and animator-duration scales (global).
 144 Hz normally; 120 Hz for fingerprint authentication, enrolment, HBM and

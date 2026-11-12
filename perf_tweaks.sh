@@ -78,11 +78,21 @@ if [ "$DEXOPT" = 1 ]; then
       done ) &
   fi
 fi
+# --- SF watchdog (host-tested in test_low_cpu.py) ---
 if [ "$SF_BOOST" = 1 ]; then
   boost_sf
-  ( LASTSF=$(pidof surfaceflinger | cut -d' ' -f1)
+  ( LASTSF=$SF
+    LASTSTAMP=""; if process_stamp "$LASTSF"; then LASTSTAMP=$PROC_STAMP; fi
     while true; do sleep 30
+      if process_unchanged "$LASTSF" "$LASTSTAMP"; then continue; fi
       N=$(pidof surfaceflinger | cut -d' ' -f1)
-      [ -n "$N" ] && [ "$N" != "$LASTSF" ] && { LASTSF=$N; echo "$(date +%T) SurfaceFlinger restarted" >> $LOG; boost_sf; }
+      [ -n "$N" ] || continue
+      NSTAMP=""; if process_stamp "$N"; then NSTAMP=$PROC_STAMP; fi
+      if [ "$N" != "$LASTSF" ] || { [ -n "$NSTAMP" ] && [ "$NSTAMP" != "$LASTSTAMP" ]; }; then
+        echo "$(date +%T) SurfaceFlinger restarted" >> $LOG; boost_sf
+      fi
+      LASTSF=$N; LASTSTAMP=$NSTAMP
     done ) &
 fi
+
+# --- end SF watchdog ---

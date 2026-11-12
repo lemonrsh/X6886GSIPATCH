@@ -1,3 +1,37 @@
+Level 2 v1 (2026-11-12) - module CPU overhead and stability only
+* Preserve every existing tuning value and feature: 0.4x animations, 144 Hz normal /
+  120 Hz FOD, physical-state/token verification, FOD waits/replay, DRAM 4266/1866 MHz,
+  HAL patches, HBM temperature/timeout/restart limits and download/performance policy.
+  No new governor, thermal bypass, refresh-rate or animation changes.
+* When grep lacks --line-buffered, use Magisk/PATH BusyBox awk with explicit flushing
+  or interactive awk instead of sending all coordinate/SYN events through mksh.
+  Interactive mode matters: fflush alone does not prevent mawk INPUT buffering.
+  Keep FAST_FILTER=0 and the original raw-input fallback on unsupported toolsets.
+* Replace repeated cat-based input-name, panel, battery-temperature and watchdog-token
+  reads with shell builtins. Parse bridge events directly, without a subshell per log
+  line, and remove the separate cut process from the HBM timestamp formatter.
+* Do not rewrite an identical refresh runtime snapshot each second. Changes and actual
+  display observations still update it; deleted snapshots are recreated and failed
+  atomic replaces are retried. It is a last-state/observation record, not a heartbeat.
+* Keep live settings reconciliation and original-value restoration. Only skip replacing
+  a settings ownership marker when it already records the successfully applied value.
+* Keep the HAL's 15 s and SurfaceFlinger's 30 s watchdog cadence, but use builtin reads
+  of the cached PID/start time while healthy, avoiding repeated process-table scans.
+  Detect PID reuse as well as exit; fall back to pidof if /proc identity is unavailable.
+* Reuse the refresh controller's existing 1 s check to honour live disable/remove flags,
+  including when its supervisor is blocked in wait for that child. Stop its listener
+  and remove ACK/PID files instead of leaving the controller active until reboot.
+* Add 18 host regressions (86 total): open-pipe native filtering with 32,000 noisy
+  input records reduced to four relevant key records, no waiting for EOF; private
+  Magisk BusyBox selection, builtin sysfs reads, unchanged-write/scan counts, retry
+  safety, PID reuse, live disable/remove and normal FOD transitions. Tested with
+  bash, dash, Android-source mksh and BusyBox ash. CI runs all tests before release.
+* No on-device CPU profile was supplied. These tests verify less redundant work and
+  preserved mocked behaviour, not a measured CPU percentage, panel latency or FOD
+  reliability on hardware. Flash in Magisk and reboot; keep the previous ZIP to roll back.
+* Brand as Level 2 v1 / versionCode 138. Keep the existing module ID intentionally so
+  this replaces the installed module rather than running two conflicting copies.
+
 v14.4.1 (2026-11-12) - FOD 120 Hz hotfix: keep the controller alive and verify the display
 * Device report: modes are valid (120 Hz = ID 0, 144 Hz = ID 1, same group/resolution),
   but refresh.sh was absent from the process list. Its last log was the HAL-restart
