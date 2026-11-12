@@ -1,6 +1,36 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## v14.4.1 hotfix: FOD staying at 144 Hz
+
+The device report confirmed a valid pair (**120 Hz = mode 0**, **144 Hz = mode 1**),
+but no running refresh controller after its HAL-restart log entry. **Flash the new
+ZIP in Magisk and reboot**; 0.4× animations and the existing DRAM/FOD safety limits
+are retained.
+
+- Both boot hooks now start one supervisor, which restarts a controller that exits
+  and records its exit status/stderr. Disabling or uninstalling the module stops it.
+- HAL restarts invalidate fingerprint session state without killing the logcat
+  listener. Session epochs reject late events from an old reader.
+- An empty SurfaceFlinger reply is **not automatically a failure or success**.
+  Android's service utility can report an empty reply even when it did not expose
+  the transaction status. The controller now checks the **actual active mode ID,
+  physical Hz and render Hz** before acknowledging a FOD request, including each
+  new HBM/SOFOD token. It cannot claim 120 Hz while the observed display is 144 Hz.
+- The physical mode request is sent first; matching framework votes are updated
+  immediately rather than waiting for the previous target's retry timer.
+
+For a copy/paste report, no archive upload is required:
+
+```sh
+su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh refresh'
+```
+
+The report includes controller/supervisor liveness, the last verified/observed
+rates, the raw mode-call reply and current SurfaceFlinger modes. Test on-device
+FOD again after the reboot; host mocks cannot prove panel latency or biometric
+reliability.
+
 ## v14.4: 0.4× animations, 144 Hz normal / 120 Hz fingerprint
 
 Flash the release ZIP in Magisk and **reboot**. No commands or volume-key choices
@@ -19,7 +49,7 @@ are needed, including when upgrading from the old always-120-Hz release.
   replaying input. A token-specific acknowledgement prevents a previous press's
   120-Hz result being reused. The wait is bounded to about 300 ms and fails open
   if the controller is unavailable, so it cannot block fingerprint capture.
-- One controller serialises all mode changes and matching min/peak framework
+- One supervised controller serialises all mode changes and matching min/peak framework
   settings, including early boot, foreground-user changes and SurfaceFlinger
   restarts. Shared FOD leases are checked every 50 ms; the press property is a
   100-ms fallback. These are software check intervals, not guaranteed panel
@@ -36,8 +66,7 @@ are needed, including when upgrading from the old always-120-Hz release.
   `service.d/x6886_restore_settings.sh` finishes restoration after boot and removes
   itself. The removal reboot also clears the SurfaceFlinger pin. If upgrading from
   an older module that already pinned 120 Hz, that existing value is the saved
-  original; reset Smooth
-  Display manually if you want ROM defaults instead.
+  original; reset Smooth Display manually if you want ROM defaults instead.
 
 **Limits:** the panel/ROM must expose 144 Hz; this cannot make an FPS-capped app
 render at 144 FPS, bypass thermal/display-driver limits, or guarantee zero flicker
@@ -95,7 +124,7 @@ event. The property/next touch can still request 120 Hz after that safety timeou
 - Background dexopt can run during AOD/Dozing as well as Asleep, still only while
   charging or at >= 40% battery. Failed attempts retry instead of marking the
   module version complete.
-- Host-side regression tests and bash/dash syntax checks run on PRs/main and
+- Host-side regression tests and bash/dash/mksh/ash checks run on PRs/main and
   before release. These are not a substitute for on-device FOD/AOD testing.
 
 ## Automatic Magisk releases

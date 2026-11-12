@@ -3,13 +3,14 @@
 
 These tests never touch /data, sysfs, input devices, or Android services. They
 extract the small marked shell helper blocks and exercise them with stubs under
-both bash and dash. They are not a substitute for on-device FOD/AOD testing.
+bash/dash and optional mksh/ash. They are not a substitute for on-device FOD/AOD testing.
 """
 
 import os
 import pathlib
 import re
 import signal
+import shutil
 import subprocess
 import tempfile
 import time
@@ -17,6 +18,11 @@ import unittest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 SHELLS = ["bash", "dash"]
+# Include Android/Magisk-style shells when installed by CI or a local developer.
+for candidate in ("mksh", "ash"):
+    executable = shutil.which(candidate)
+    if executable:
+        SHELLS.append(executable)
 
 
 def read(name):

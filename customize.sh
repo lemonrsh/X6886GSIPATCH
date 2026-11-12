@@ -136,13 +136,14 @@ rm -f "$DATA/fod/dt2w.conf" "$DATA/fod/dt2w.log" "$DATA/fod/dt2w_last_wake" "$DA
 rm -f "$DATA/fod/gpu.conf" "$DATA/fod/gpu.orig" "$DATA/fod/gpu.log" "$DATA/fod/.gpufix.pid" "$DATA/fod/.gpufix.reload"
 # v10: Download Lag Fix settings: migrate the standalone module's config once
 [ ! -f "$DATA/fod/dlfix.conf" ] && [ -f "$DATA/dlfix.conf" ] && cp "$DATA/dlfix.conf" "$DATA/fod/dlfix.conf"
-rm -f "$DATA/fod/safe.flag" "$DATA/fod/bootcount" "$DATA/fod/.refresh.pid"
+# Live PID files belong to the running controller; stale PIDs are checked on launch.
+rm -f "$DATA/fod/safe.flag" "$DATA/fod/bootcount"
 ui_print "- Configs in /data/adb/fod: hbm.conf refresh.conf gsi.conf dlfix.conf dram.conf sofod_touch.conf(optional)"
 ui_print "- v10.5: SOT watcher removed; Settings battery history/database are untouched."
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log dram.log sofod_touch.log gsi.log"
-ui_print "- v14.4: Android animation scales = 0.4x (window / transition / animator)."
-ui_print "- 144 Hz normal / 120 Hz fingerprint, enrolment and screen-off FOD."
+ui_print "- v14.4.1: Android animation scales = 0.4x (window / transition / animator)."
+ui_print "- Supervised 144 Hz normal / verified 120 Hz fingerprint, enrolment and SOFOD."
 ui_print "- Uses compatible display modes; falls back to 120 Hz if 144 Hz is unavailable."
 ui_print "- DRAM lock - 4266 MHz screen on / 1866 MHz screen off. dram.conf"
 ui_print "- Reboot to apply."

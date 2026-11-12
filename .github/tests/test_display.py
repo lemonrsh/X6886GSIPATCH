@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-from test_fixes import SHELLS, marked_block, read, run_shell
+from test_fixes import REPO, SHELLS, marked_block, read, run_shell
 
 HELPERS = marked_block(
     read("refresh.sh"),
@@ -67,6 +67,24 @@ class RefreshHelperTests(unittest.TestCase):
 
     def test_legacy_flat_dump(self):
         self.parse(modes().replace("Display 123:\n  connectionType=Internal\n", ""), "3 2 144")
+
+    def test_real_device_dump_selects_fod_id_zero_and_observes_actual_rates(self):
+        text = (REPO / ".github/tests/fixtures/x6886-sf-displays.txt").read_text()
+        self.parse(text, "1 0 144")
+        for shell in SHELLS:
+            result = run_shell(shell, HELPERS + "\nrefresh_active <<'MODES'\n" + text + "MODES\n")
+            self.assertEqual(result.stdout.strip(), "1 144 144", result.stderr)
+
+    def test_binder_reply_classification_does_not_imply_verification(self):
+        cases = [("0", "Result: Parcel(NULL)", "empty"),
+                 ("0", "Result: Parcel(    )", "empty"),
+                 ("0", "Result: Parcel(00000000)", "zero"),
+                 ("0", "Result: Parcel(ffffffff)", "rejected"),
+                 ("1", "Result: Parcel(NULL)", "error")]
+        for shell in SHELLS:
+            for rc, reply, expected in cases:
+                result = run_shell(shell, HELPERS + f"\nrefresh_reply {rc} '{reply}'\n")
+                self.assertEqual(result.stdout.strip(), expected, result.stderr)
 
     def test_auth_enrolment_cancel_success_and_touch_events(self):
         cases = {
@@ -277,7 +295,7 @@ if module_setting_value '1.2.3'; then exit 1; fi
 class FakeAndroid:
     """A complete script instance with file-backed Android command stubs."""
 
-    def __init__(self, shell, display_modes=None, boot="1", pin_ok=True, seed=False):
+    def __init__(self, shell, display_modes=None, boot="1", pin_ok=True, seed=False, reply="zero"):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.tmp.name)
         self.mod = self.root / "mod"; self.mod.mkdir()
@@ -285,11 +303,11 @@ class FakeAndroid:
         self.bin = self.root / "bin"; self.bin.mkdir()
         self.settings = self.root / "settings"; self.settings.mkdir()
         self.shell = shell
-        for name in ["refresh.sh", "refresh_fod.sh", "settings_state.sh", "animations.sh", "lib.sh", "uninstall.sh"]:
+        for name in ["refresh.sh", "refresh_supervisor.sh", "refresh_fod.sh", "settings_state.sh", "animations.sh", "lib.sh", "uninstall.sh", "diag.sh", "module.prop"]:
             text = read(name).replace("/data/adb/fod", str(self.data))
             text = text.replace("/sys/kernel/tran_display/lcm_hbm_state", str(self.root / "hbm"))
             (self.mod / name).write_text(text)
-        for name, value in {"press": "0", "boot": boot, "user": "0", "pin_ok": "1" if pin_ok else "0",
+        for name, value in {"press": "0", "boot": boot, "user": "0", "pin_ok": "1" if pin_ok else "0", "reply": reply,
                             "modes": modes() if display_modes is None else display_modes,
                             "fingerprint": "Current operation: FingerprintAuthenticationClient" if seed else "Current operation: null"}.items():
             self.put(name, value)
@@ -304,8 +322,28 @@ case "$1" in sys.boot_completed) cat "$TESTROOT/boot" ;; sys.phh.oplus.fppress) 
 case "$1" in surfaceflinger) cat "$TESTROOT/sfpid" ;; *) cat "$TESTROOT/halpid" ;; esac
 ''',
             "dumpsys": '''#!/bin/sh
+if [ "$1" = -t ]; then shift 2; fi
 case "$1" in
-  SurfaceFlinger) echo scan >> "$TESTROOT/scans"; cat "$TESTROOT/modes" ;;
+  SurfaceFlinger)
+    echo scan >> "$TESTROOT/scans"
+    id=$(cat "$TESTROOT/mode" 2>/dev/null)
+    [ -f "$TESTROOT/observed_mode" ] && id=$(cat "$TESTROOT/observed_mode")
+    if [ -z "$id" ]; then id=0; fi
+    render=$(cat "$TESTROOT/render_override" 2>/dev/null)
+    awk -v id="$id" -v render="$render" '
+      /activeMode=/ || /renderRate=/ { next }
+      { print }
+      /\{id=/ {
+        line=$0; sub(/.*\{id=/,"",line); sub(/,.*/,"",line)
+        if (line == id) {
+          active=$0; sub(/^[^{]*/,"",active)
+          rate=$0; sub(/.*vsyncRate=/,"",rate); sub(/ Hz.*/,"",rate)
+        }
+      }
+      END { if (active != "") { print "    activeMode=" active; print "    renderRate=" (render != "" ? render : rate) " Hz" } }
+    ' "$TESTROOT/modes"
+    ;;
+
   fingerprint) cat "$TESTROOT/fingerprint" ;;
 esac
 ''',
@@ -315,7 +353,11 @@ esac
 if [ "$(cat "$TESTROOT/pin_ok")" = 1 ]; then
   printf '%s\\n' "$5" > "$TESTROOT/mode"
   printf '%s\\n' "$5" >> "$TESTROOT/calls"
-  echo "Result: Parcel(00000000 '....')"
+  case "$(cat "$TESTROOT/reply")" in
+    empty) echo 'Result: Parcel(NULL)' ;;
+    blank) echo 'Result: Parcel(    )' ;;
+    *) echo "Result: Parcel(00000000 '....')" ;;
+  esac
 else
   echo "Result: Parcel(ffffffff '....')"
 fi
@@ -324,6 +366,7 @@ fi
 [ -f "$TESTROOT/settings_down" ] && exit 1
 user=0
 if [ "$1" = --user ]; then user=$2; shift 2; fi
+[ "$user" = current ] && user=$(cat "$TESTROOT/user")
 op=$1; ns=$2; key=$3; value=$4
 f=$TESTROOT/settings/$ns.$user.$key
 case "$op" in
@@ -341,6 +384,8 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
         }
         for name, body in stubs.items():
             file = self.bin / name; file.write_text(body); file.chmod(0o755)
+        import shutil
+        (self.bin / "sh").symlink_to(shutil.which(shell) or shell)
         self.env = dict(os.environ, TESTROOT=str(self.root), FODDATA=str(self.root),
                         PATH=f"{self.bin}:{os.environ['PATH']}")
         self.sf = subprocess.Popen(["sleep", "60"])
@@ -366,12 +411,12 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
         except FileNotFoundError:
             return ""
 
-    def wait(self, condition, limit=3):
+    def wait(self, condition, limit=3, check_controller=True):
         deadline = time.monotonic() + limit
         while time.monotonic() < deadline:
             if condition():
                 return
-            if self.proc.poll() is not None:
+            if check_controller and self.proc.poll() is not None:
                 raise AssertionError(f"controller exited: {self.proc.returncode}; {self.proc.communicate()}")
             time.sleep(0.01)
         raise AssertionError("timed out: " + self.contents("fod/refresh.log"))
@@ -499,11 +544,13 @@ class DisplayDaemonTests(unittest.TestCase):
         for shell in SHELLS:
             with self.subTest(shell=shell), FakeAndroid(shell, pin_ok=False) as dev:
                 dev.setting("min_refresh_rate", "144")
-                self.assertFalse((dev.data / ".refresh_ready").exists())
                 self.assertFalse((dev.data / ".refresh_applied").exists())
-                self.assertNotIn("Hz requested", dev.contents("fod/refresh.log"))
+                self.assertNotIn("Hz verified", dev.contents("fod/refresh.log"))
                 dev.put("press", "1"); dev.setting("peak_refresh_rate", "120")
-                self.assertEqual(dev.contents("fod/refresh.log").count("pin unavailable"), 1)
+                dev.wait(lambda: "120 Hz NOT verified" in dev.contents("fod/refresh.log"))
+                time.sleep(0.3)
+                self.assertEqual(dev.contents("fod/refresh.log").count("120 Hz NOT verified"), 1)
+                self.assertFalse((dev.data / ".refresh_applied").exists())
 
     def test_foreground_user_switch_gets_own_votes_and_originals(self):
         for shell in SHELLS:
@@ -588,13 +635,153 @@ class DisplayDaemonTests(unittest.TestCase):
                 self.assertFalse((dev.data / ".refresh_ready").exists())
                 self.assertFalse((pathlib.Path("/proc") / str(logger)).exists())
 
+    def test_real_device_mode_zero_and_empty_binder_reply_are_not_a_failure(self):
+        dump = (REPO / ".github/tests/fixtures/x6886-sf-displays.txt").read_text()
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell, display_modes=dump, reply="empty") as dev:
+                dev.mode(1)
+                dev.wait(lambda: (dev.data / ".refresh_ready").exists())
+                result = dev.client('refresh_fod_begin hbm; echo "$REFRESH_FOD_TOKEN"')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                dev.mode(0)
+                dev.wait(lambda: dev.contents("fod/.refresh_applied").split()[1:3] == ["120", result.stdout.strip()])
+                dev.client(f"refresh_fod_end hbm '{result.stdout.strip()}'")
+                dev.mode(1)
+
+    def test_reply_alone_cannot_ack_a_display_still_at_144(self):
+        dump = (REPO / ".github/tests/fixtures/x6886-sf-displays.txt").read_text()
+        for shell in SHELLS:
+            for reply in ["empty", "zero"]:
+                with self.subTest(shell=shell, reply=reply), FakeAndroid(shell, display_modes=dump, reply=reply) as dev:
+                    dev.mode(1)
+                    dev.wait(lambda: (dev.data / ".refresh_applied").exists())
+                    dev.put("observed_mode", "1")  # driver ignores the next request
+                    result = dev.client('refresh_fod_begin hbm; echo "$REFRESH_FOD_TOKEN"')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    dev.wait(lambda: "120 Hz NOT verified" in dev.contents("fod/refresh.log"))
+                    self.assertFalse((dev.data / ".refresh_applied").exists())
+                    self.assertIn("actual_mode=1 physical=144", dev.contents("fod/refresh.log"))
+                    self.assertIn("Result: Parcel(", dev.contents("fod/refresh_last_reply.txt"))
+
+    def test_physical_120_with_render_rate_144_is_not_acknowledged(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell) as dev:
+                dev.mode(3)
+                dev.put("render_override", "144")
+                result = dev.client('refresh_fod_begin hbm; echo "$REFRESH_FOD_TOKEN"')
+                dev.wait(lambda: "physical=120 render=144" in dev.contents("fod/refresh.log"))
+                self.assertFalse((dev.data / ".refresh_applied").exists())
+                (dev.root / "render_override").unlink()
+                dev.wait(lambda: dev.contents("fod/.refresh_applied").split()[1:3] == ["120", result.stdout.strip()])
+
+    def test_fresh_hbm_token_rechecks_a_previously_verified_120_mode(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell) as dev:
+                dev.mode(3)
+                dev.event("ISession::authenticate called (op_id=0x0)"); dev.mode(2)
+                dev.wait(lambda: dev.contents("fod/.refresh_applied").split()[1:2] == ["120"])
+                dev.put("observed_mode", "3")
+                result = dev.client('refresh_fod_begin hbm; echo "$REFRESH_FOD_TOKEN"')
+                self.assertFalse((dev.data / ".refresh_applied").exists())
+                (dev.root / "observed_mode").unlink()
+                dev.wait(lambda: dev.contents("fod/.refresh_applied").split()[1:3] == ["120", result.stdout.strip()])
+
+    def test_reported_empty_reply_then_hal_restart_keeps_controller_and_listener(self):
+        dump = (REPO / ".github/tests/fixtures/x6886-sf-displays.txt").read_text()
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell, display_modes=dump, reply="empty") as dev:
+                dev.mode(1)
+                dev.wait(lambda: (dev.data / ".refresh_applied").exists())
+                logger = dev.contents("fod/.refresh_logcat.pid")
+                dev.hal.terminate(); dev.hal.wait(timeout=5)
+                dev.hal = subprocess.Popen(["sleep", "60"])
+                dev.put("halpid", str(dev.hal.pid))
+                dev.wait(lambda: "without stopping controller" in dev.contents("fod/refresh.log"))
+                self.assertIsNone(dev.proc.poll())
+                self.assertEqual(dev.contents("fod/.refresh_logcat.pid"), logger)
+                dev.put("press", "1"); dev.mode(0)
+                dev.setting("min_refresh_rate", "120")
+                dev.setting("peak_refresh_rate", "120")
+                dev.put("press", "0"); dev.mode(1)
+                dev.event("ISession::enroll called (challenge=0x5)"); dev.mode(0)
+                dev.event("ICancellationSignal::cancel invoked"); dev.mode(1)
+
+    def test_logcat_death_recovers_and_press_fallback_still_downshifts(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell) as dev:
+                dev.mode(3)
+                dev.wait(lambda: (dev.data / ".refresh_logcat.pid").exists())
+                logger = int(dev.contents("fod/.refresh_logcat.pid"))
+                os.kill(logger, signal.SIGKILL)
+                dev.put("press", "1"); dev.mode(2)
+                dev.wait(lambda: dev.contents("fod/.refresh_logcat.pid") not in ["", str(logger)])
+                dev.put("press", "0"); dev.mode(3)
+                dev.event("ISession::authenticate called (op_id=0x0)"); dev.mode(2)
+                dev.event("ICancellationSignal::cancel invoked"); dev.mode(3)
+
+    def test_supervisor_recovers_a_killed_controller_and_stops_on_uninstall(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell) as dev:
+                dev.mode(3)
+                supervisor = dev.start("refresh_supervisor.sh")
+                dev.wait(lambda: (dev.data / ".refresh_supervisor.pid").exists())
+                old = dev.proc.pid
+                dev.put("press", "1")
+                dev.proc.kill(); dev.proc.wait(timeout=3)
+                dev.wait(lambda: dev.contents("fod/.refresh.pid") not in ["", str(old)],
+                         limit=5, check_controller=False)
+                dev.wait(lambda: dev.contents("fod/.refresh_applied").split()[1:2] == ["120"],
+                         check_controller=False)
+                self.assertIsNone(supervisor.poll())
+                result = subprocess.run([shell, str(dev.mod / "uninstall.sh")], env=dev.env,
+                                        text=True, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                supervisor.communicate(timeout=3)
+                time.sleep(1.1)
+                self.assertFalse((dev.data / ".refresh.pid").exists())
+                self.assertFalse((dev.data / ".refresh_supervisor.pid").exists())
+                self.assertFalse((dev.data / ".refresh_applied").exists())
+
+    def test_targeted_diagnostics_are_plain_text_and_show_liveness_and_actual_mode(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell, reply="empty") as dev:
+                dev.mode(3)
+                dev.wait(lambda: (dev.data / ".refresh_applied").exists())
+                dev.start("refresh_supervisor.sh")
+                dev.wait(lambda: (dev.data / ".refresh_supervisor.pid").exists())
+                result = subprocess.run([shell, str(dev.mod / "diag.sh"), "refresh"], env=dev.env,
+                                        text=True, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for text in ["version=v14.4.1", "refresh: running=yes", "refresh_supervisor: running=yes",
+                             "verified ACK", "physical_hz=144", "Parcel(NULL)", "activeMode={id=3"]:
+                    self.assertIn(text, result.stdout)
+                self.assertNotIn("== top threads", result.stdout)
+
+    def test_two_magisk_launches_share_one_supervisor(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell) as dev:
+                dev.mode(3)
+                first = dev.start("refresh_supervisor.sh")
+                dev.wait(lambda: dev.contents("fod/.refresh_supervisor.pid") == str(first.pid))
+                second = dev.start("refresh_supervisor.sh")
+                second.communicate(timeout=3)
+                self.assertEqual(second.returncode, 0)
+                self.assertIsNone(first.poll())
+                self.assertEqual(dev.contents("fod/.refresh_supervisor.pid"), str(first.pid))
+                self.assertEqual(dev.contents("fod/.refresh.pid"), str(dev.proc.pid))
+
     def test_wiring_and_version(self):
         self.assertIn("animations.sh", read("service.sh"))
         self.assertIn("single_instance refresh", read("refresh.sh"))
         self.assertIn("single_instance animations", read("animations.sh"))
+        self.assertIn("single_instance refresh_supervisor", read("refresh_supervisor.sh"))
+        self.assertIn("refresh_supervisor.sh", read("post-fs-data.sh"))
+        self.assertIn("refresh_supervisor.sh", read("service.sh"))
+        self.assertNotIn('stop_events; watch_events', read("refresh.sh"))
+        self.assertIn('if [ "$1" = refresh ]', read("diag.sh"))
         self.assertNotIn("TARGET_HZ=120", read("customize.sh"))
         self.assertNotIn("fixed 120 Hz", read("diag.sh"))
-        self.assertIn("version=v14.4\nversionCode=136", read("module.prop"))
+        self.assertIn("version=v14.4.1\nversionCode=137", read("module.prop"))
         self.assertIn("module_settings_restore", read("uninstall.sh"))
 
 

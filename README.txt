@@ -1,5 +1,16 @@
-X6886 GSI PATCH by lemonrsh — v14.4 (versionCode 136)
+X6886 GSI PATCH by lemonrsh — v14.4.1 (versionCode 137)
 ====================================
+
+HOTFIX v14.4.1: if FOD stayed at 144 Hz, install this update and REBOOT.
+The report showed valid modes (120 Hz ID 0 / 144 Hz ID 1) but no refresh daemon.
+A single supervisor now restarts it after an exit. HAL restarts clear session
+state without killing the listener. Empty/zero Binder replies are not proof:
+only an observed matching active mode and physical/render rate earn a FOD ACK.
+0.4x animations, DRAM lock and HBM safety protections are preserved.
+
+Plain-text diagnostics (copy/paste the output; no TAR upload needed):
+  su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh refresh'
+This is still host-tested, not on-device confirmation of the hotfix.
 
 NEW: 0.4x Android window, transition and animator-duration scales (global).
 144 Hz normally; 120 Hz for fingerprint authentication, enrolment, HBM and
