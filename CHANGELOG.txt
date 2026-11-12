@@ -1,3 +1,33 @@
+v14.4.1 (2026-11-12) - FOD 120 Hz hotfix: keep the controller alive and verify the display
+* Device report: modes are valid (120 Hz = ID 0, 144 Hz = ID 1, same group/resolution),
+  but refresh.sh was absent from the process list. Its last log was the HAL-restart
+  path, min/peak stayed at 144, and ACK/session files were empty. The old log did not
+  record the exact exit signal or Binder reply; it could not prove which killed it.
+* Add a single refresh_supervisor.sh, launched by both Magisk hooks. Attach to a live
+  controller or restart an exited one; record exit statuses and stderr for diagnosis.
+  Honour module disable/remove and uninstall flags. Preserve live PID guards on flash.
+* Do not kill/reap the bridge logcat pipeline on a fingerprint HAL restart. Invalidate
+  session epochs instead, so a stale reader cannot reintroduce a previous auth session.
+  Reconnect logcat independently, reseed active auth, and log clean controller exits.
+* Fix the zero-word-only Binder reply check: AOSP service call may print Parcel(NULL)
+  even for a valid debug mode request, but it also ignores transact status. Neither
+  empty nor zero replies now count as proof. Verify the active mode ID, physical Hz
+  and render Hz from the live display dump before publishing a token-specific ACK.
+* Request the physical mode first; synchronise min/peak immediately on target changes
+  instead of waiting behind the previous rate's retry timer. Bound failed requests,
+  retry observations without error spam, and re-check actual state for each new hold.
+  Discovery/verification dumpsys calls have timeouts; HBM's fail-open ACK wait stays bounded.
+* Diagnostics: sh diag.sh refresh prints plain text for copy/paste (daemon liveness,
+  target/observed/verified rates, last raw reply, supervisor errors and current modes).
+  No TAR upload is needed. Existing bundle diagnostics still work.
+* Preserve 0.4x animation scales, HBM timeout/temperature protection, Goodix checks,
+  screen-aware DRAM lock, download fixes and settings restoration.
+* 68 host tests, including the supplied display format/ID-zero case, ambiguous empty
+  replies with and without actual switching, wrong render rate, HAL/logcat restarts,
+  supervisor recovery/uninstall and duplicate launches. CI now installs mksh and
+  BusyBox ash as well as testing bash/dash. These are not on-device validation.
+* Version bumped to v14.4.1 / versionCode 137. Flash in Magisk and reboot.
+
 v14.4 (2026-11-12) - 0.4x animations; 144 Hz normal / 120 Hz FOD
 * Set all three Android framework animation scales globally to 0.4: window,
   transition and animator duration. Apply after boot, retry provider failures,

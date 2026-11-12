@@ -29,6 +29,16 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Android-style test shells
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends mksh busybox
+          mkdir -p "$RUNNER_TEMP/x6886-shells"
+          ln -s "$(command -v busybox)" "$RUNNER_TEMP/x6886-shells/ash"
+          echo "$RUNNER_TEMP/x6886-shells" >> "$GITHUB_PATH"
+
       - name: Reliability regression tests
         shell: bash
         run: python3 -B -m unittest discover -s .github/tests -p 'test_*.py' -v
@@ -42,7 +52,7 @@ jobs:
           for file in module.prop META-INF/com/google/android/update-binary \
                       META-INF/com/google/android/updater-script \
                       customize.sh post-fs-data.sh service.sh refresh.sh \
-                      refresh_fod.sh animations.sh settings_state.sh lib.sh uninstall.sh; do
+                      refresh_fod.sh refresh_supervisor.sh animations.sh settings_state.sh lib.sh uninstall.sh; do
             if [[ ! -f "$file" ]]; then
               echo "::error::Missing required module file: $file"
               exit 1
@@ -120,6 +130,7 @@ jobs:
               "service.sh",
               "refresh.sh",
               "refresh_fod.sh",
+              "refresh_supervisor.sh",
               "animations.sh",
               "settings_state.sh",
               "lib.sh",

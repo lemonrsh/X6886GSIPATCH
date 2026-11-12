@@ -1,0 +1,15 @@
+Display 4627039422300187648
+    port=0
+    connectionType=Internal
+    name="MTKDEV"
+    powerMode=On
+    renderRate=144.00 Hz
+    activeMode={id=1, hwcId=1, resolution=1080x2400, vsyncRate=144.00 Hz, dpi=387.57x388.15, group=0, vrrConfig=N/A, hdrOutputType=SYSTEM}
+    displayModes=
+        {id=0, hwcId=0, resolution=1080x2400, vsyncRate=120.00 Hz, dpi=387.57x388.15, group=0, vrrConfig=N/A, hdrOutputType=SYSTEM}
+        {id=1, hwcId=1, resolution=1080x2400, vsyncRate=144.00 Hz, dpi=387.57x388.15, group=0, vrrConfig=N/A, hdrOutputType=SYSTEM}
+        {id=2, hwcId=2, resolution=1080x2400, vsyncRate=90.00 Hz, dpi=387.57x388.15, group=0, vrrConfig=N/A, hdrOutputType=SYSTEM}
+        {id=3, hwcId=3, resolution=1080x2400, vsyncRate=60.00 Hz, dpi=387.57x388.15, group=0, vrrConfig=N/A, hdrOutputType=SYSTEM}
+    displayManagerPolicy={defaultModeId=1, allowGroupSwitching=false, primaryRanges={physical=[144.00 Hz, 144.00 Hz], render=[144.00 Hz, 144.00 Hz]}, appRequestRanges={physical=[144.00 Hz, 144.00 Hz], render=[144.00 Hz, 144.00 Hz]} idleScreenConfig=nullptr}
+Virtual Display Helper Threads (Pooled by UID)
+    Status=None active

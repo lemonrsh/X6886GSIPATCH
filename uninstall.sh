@@ -6,7 +6,7 @@ D=$DATA/fod
 RESTORE=$DATA/service.d/x6886_restore_settings.sh
 mkdir -p "$D"
 touch "$D/.ui_stopping"
-for part in refresh animations; do
+for part in refresh_supervisor refresh animations; do
   p=""
   [ -r "$D/.$part.pid" ] && read -r p < "$D/.$part.pid"
   case "$p" in ''|*[!0-9]*) continue ;; esac

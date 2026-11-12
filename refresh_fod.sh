@@ -30,8 +30,8 @@ refresh_fod_begin() {   # hbm | sofod; always fail open (never break fingerprint
   [ -n "$REFRESH_FOD_TOKEN" ] || REFRESH_FOD_TOKEN=$$-$REFRESH_NOW
   printf '%s %s %s\n' "$REFRESH_BOOT" "$((REFRESH_NOW + 800))" "$REFRESH_FOD_TOKEN" > "$D/.refresh_hold.$1.tmp.$$" &&
     mv -f "$D/.refresh_hold.$1.tmp.$$" "$D/.refresh_hold.$1" || return 0
-  # No added delay on ROMs without a working 120 Hz controller. A ready
-  # controller normally ACKs on the next 50 ms tick, before HBM/key195/replay.
+  # Skip the wait when no live controller has discovered a 120 Hz mode. An
+  # ACK requires observing the requested mode/rate, not just a Binder reply.
   _rf_ready=""; _rf_pid=""
   [ -r "$D/.refresh_ready" ] && read -r _rf_ready _rf_pid < "$D/.refresh_ready"
   [ "$_rf_ready" = "$REFRESH_BOOT" ] || return 0

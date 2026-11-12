@@ -1,11 +1,11 @@
 #!/system/bin/sh
 MODDIR=${0%/*}
 # ---- FIRST THING: start the 144 Hz normal / 120 Hz FOD refresh controller ----
-# It waits for SurfaceFlinger by itself (never gives up, no boot_completed dependency), runs at nice -8 and is a
-# single instance (service.sh launches it again as a fallback; the second one just exits).
-if [ -f "$MODDIR/refresh.sh" ]; then
-  if command -v setsid >/dev/null 2>&1; then ( setsid sh "$MODDIR/refresh.sh" >/dev/null 2>&1 & )
-  else ( sh "$MODDIR/refresh.sh" >/dev/null 2>&1 & ); fi
+# The single supervisor starts early, waits for SurfaceFlinger and restarts a
+# controller that exits. service.sh starts the same supervisor as a fallback.
+if [ -f "$MODDIR/refresh_supervisor.sh" ]; then
+  if command -v setsid >/dev/null 2>&1; then ( setsid sh "$MODDIR/refresh_supervisor.sh" >/dev/null 2>&1 & )
+  else ( sh "$MODDIR/refresh_supervisor.sh" >/dev/null 2>&1 & ); fi
 fi
 
 D=/data/adb/fod; mkdir -p $D
