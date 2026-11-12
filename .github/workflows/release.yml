@@ -52,7 +52,8 @@ jobs:
           for file in module.prop META-INF/com/google/android/update-binary \
                       META-INF/com/google/android/updater-script \
                       customize.sh post-fs-data.sh service.sh refresh.sh \
-                      refresh_fod.sh refresh_supervisor.sh animations.sh settings_state.sh lib.sh uninstall.sh; do
+                      refresh_fod.sh refresh_supervisor.sh animations.sh settings_state.sh lib.sh uninstall.sh \\
+                      rom_defaults.sh rom_defaults_lib.sh phh-defaults.conf rom-defaults.dex; do
             if [[ ! -f "$file" ]]; then
               echo "::error::Missing required module file: $file"
               exit 1
@@ -135,6 +136,10 @@ jobs:
               "settings_state.sh",
               "lib.sh",
               "uninstall.sh",
+              "rom_defaults.sh",
+              "rom_defaults_lib.sh",
+              "phh-defaults.conf",
+              "rom-defaults.dex",
           }
           with zipfile.ZipFile(sys.argv[1]) as archive:
               names = archive.namelist()

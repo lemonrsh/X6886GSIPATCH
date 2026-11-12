@@ -1,6 +1,18 @@
-X6886 GSI PATCH by lemonrsh — Level 2 v2 (versionCode 139)
+X6886 GSI PATCH by lemonrsh — Level 2 v3 (versionCode 140)
 ====================================
 
+SCREENSHOT-MATCHED PHH / Android defaults plus wake-safe 144/120 Hz recovery.
+Flash in Magisk and REBOOT. Same module ID: updates the existing installation.
+
+* Apply supported PHH switch states, status-bar padding 1/1, lock-after-timeout
+  Immediately, and supported Lineage power-menu switches.
+* Auto-confirm is enabled only for an existing eligible PIN after Android's own
+  stored-PIN-length refresh; credentials are never read or changed. Locked,
+  unsupported and ineligible states are skipped safely.
+* Preserve originals and restore only still-owned values on uninstall. Unknown
+  list values are left alone. Host tests are not physical-phone validation.
+
+Previous Level 2 v2 details:
 WAKE/BOOT-SAFE 144 Hz normal / verified 120 Hz FOD recovery.
 Flash in Magisk and REBOOT. Same module ID: updates the existing installation.
 

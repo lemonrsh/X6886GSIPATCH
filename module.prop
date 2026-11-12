@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh - Level 2 v2
-version=Level 2 v2
-versionCode=139
+name=X6886 GSI PATCH by lemonrsh - Level 2 v3
+version=Level 2 v3
+versionCode=140
 author=lemonrsh
-description=Level 2 v2: wake/boot-safe 144 Hz normal / verified 120 Hz FOD. Pre-arms 120 Hz during sleep/early boot, rechecks wake and repeated overrides, continues bounded retries and reconciles live refresh votes. Retains 0.4x animations, 4266/1866 MHz screen-aware DRAM, HAL patch, HBM safety and download fixes.
+description=Level 2 v3: screenshot-matched PHH and Android settings, start/end status padding 1, immediate lock and safe eligible-PIN auto-confirm. Retains wake-safe 144/120 Hz FOD, HBM safety, animations, DRAM and performance/download fixes.

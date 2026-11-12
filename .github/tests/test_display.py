@@ -767,7 +767,7 @@ class DisplayDaemonTests(unittest.TestCase):
                 result = subprocess.run([shell, str(dev.mod / "diag.sh"), "refresh"], env=dev.env,
                                         text=True, capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                for text in ["version=Level 2 v2", "refresh: running=yes", "refresh_supervisor: running=yes",
+                for text in ["version=Level 2 v3", "refresh: running=yes", "refresh_supervisor: running=yes",
                              "verified ACK", "physical_hz=144", "Parcel(NULL)", "activeMode={id=3"]:
                     self.assertIn(text, result.stdout)
                 self.assertNotIn("== top threads", result.stdout)
@@ -796,7 +796,7 @@ class DisplayDaemonTests(unittest.TestCase):
         self.assertIn('if [ "$1" = refresh ]', read("diag.sh"))
         self.assertNotIn("TARGET_HZ=120", read("customize.sh"))
         self.assertNotIn("fixed 120 Hz", read("diag.sh"))
-        self.assertIn("version=Level 2 v2\nversionCode=139", read("module.prop"))
+        self.assertIn("version=Level 2 v3\nversionCode=140", read("module.prop"))
         self.assertIn("id=X6886_GSI_PATCH_level_1_by_lemonrsh\n", read("module.prop"))
         self.assertIn("module_settings_restore", read("uninstall.sh"))
 
