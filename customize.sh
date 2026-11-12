@@ -65,7 +65,7 @@ LEAD_S=0.04
 CONF
 fi
 [ "$SKIPHAL" = 1 ] && sed -i 's/^HAL_PATCH=.*/HAL_PATCH=0/' "$DATA/fod/hbm.conf"
-# v14.4: migrate the old always-120 controller. Mode IDs are resolved fresh from
+# v15.0: migrate the old always-120 controller. Mode IDs are resolved fresh from
 # SurfaceFlinger; never reuse a cached ID across a reboot/HAL/ROM update.
 cat > "$DATA/fod/refresh.conf" <<'CONF'
 # 144 Hz interactive / 120 Hz FOD, sleep and wake guard (compatible modes only).
@@ -74,7 +74,8 @@ SETTINGS_RATE=1
 CONF
 rm -f "$DATA/fod/refresh.cache" "$DATA/fod/.refresh_want" "$DATA/fod/.ui_stopping"
 # A reinstallation owns the settings again; cancel only our deferred uninstall job.
-rm -f "$DATA/service.d/x6886_restore_settings.sh" "$DATA/fod/.settings_restore_lib.sh"
+rm -f "$DATA/service.d/x6886_restore_settings.sh" "$DATA/fod/.settings_restore_lib.sh" \
+  "$DATA/fod/.rom_restore_lib.sh" "$DATA/fod/.rom_restore.dex" "$DATA/fod/.rom_restore.conf"
 if [ ! -f "$DATA/fod/gsi.conf" ]; then
 cat > "$DATA/fod/gsi.conf" <<'CONF'
 PERF_GOVERNOR=0   # 1 = pin CPU policies to the performance governor (more heat and battery drain)
@@ -114,6 +115,18 @@ addkey "$DATA/fod/gsi.conf" VM_DIRTY 1
 addkey "$DATA/fod/gsi.conf" DEX_INSTALL_VERIFY 1
 addkey "$DATA/fod/gsi.conf" FAST_FIRST_BOOT 1
 addkey "$DATA/fod/gsi.conf" BOOT_THREADS 0
+# Level 2 v3: migrate the former force-latch default to the pictured safer auto mode.
+# Other custom gsi.conf tuning is left intact.
+if grep -q '^SF_LATCH_UNSIGNALED=' "$DATA/fod/gsi.conf"; then
+  sed -i 's/^SF_LATCH_UNSIGNALED=.*/SF_LATCH_UNSIGNALED=0/' "$DATA/fod/gsi.conf"
+else
+  echo 'SF_LATCH_UNSIGNALED=0' >> "$DATA/fod/gsi.conf"
+fi
+if grep -q '^SF_AUTO_LATCH_UNSIGNALED=' "$DATA/fod/gsi.conf"; then
+  sed -i 's/^SF_AUTO_LATCH_UNSIGNALED=.*/SF_AUTO_LATCH_UNSIGNALED=1/' "$DATA/fod/gsi.conf"
+else
+  echo 'SF_AUTO_LATCH_UNSIGNALED=1' >> "$DATA/fod/gsi.conf"
+fi
 addkey "$DATA/fod/hbm.conf" PROP_WAIT 0
 sed -i 's/^PROP_WAIT=.*/PROP_WAIT=0/' "$DATA/fod/hbm.conf"   # v11.2.1: back to proven polling
 addkey "$DATA/fod/dlfix.conf" ADAPTIVE 1

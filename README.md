@@ -1,7 +1,25 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## Level 2 v2: wake/boot-safe 144 Hz ↔ 120 Hz recovery
+## Level 2 v3: screenshot-matched PHH and Android defaults
+
+**Flash the new ZIP in Magisk and reboot.** Version code: **140**. The module
+ID remains unchanged for an in-place update. A finite boot task applies the pictured
+PHH preferences after the owner unlocks; refresh/FOD controllers start independently.
+It sets status-bar start/end padding to **1**, selects **Immediately** for lock-after-
+timeout, and matches supported PHH/power-menu switches. PIN auto-confirm is attempted
+only for an existing eligible PIN and only through Android's LockPatternUtils plus
+the Settings-style PIN-length refresh. It never reads or changes a credential. Unknown
+list values remain untouched; missing ROM features are skipped. Original values and
+module ownership are recorded for uninstall, and the previous ZIP should be kept for
+rollback. This change has host tests only—no phone/ROM validation is claimed.
+
+PHH preferences are changed only while the PHH app process is stopped, then the
+app is resumed; unsupported keys are detected from the installed APK's DEX. The
+module does not edit preferences through shell/XML, use invented Settings provider
+keys, or invoke old Securize behavior that can remove root.
+
+## Previous: Level 2 v2 — wake/boot-safe 144 Hz ↔ 120 Hz recovery
 
 **Flash the new ZIP in Magisk and reboot.** Version code: **139**. The module ID
 is unchanged, so this updates the existing module rather than adding a second

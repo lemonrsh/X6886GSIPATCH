@@ -8,6 +8,8 @@ MODDIR=${0%/*}
 [ -f "$MODDIR/refresh_supervisor.sh" ] && ( sh "$MODDIR/refresh_supervisor.sh" >/dev/null 2>&1 & )
 # boot counter (safe mode, see post-fs-data.sh): reset once the phone is up for 20 s past boot completed
 ( while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done; sleep 20; echo 0 > /data/adb/fod/bootcount ) &
+# Finite, independent boot defaults task; CE/PIN waits never block FOD or refresh.
+[ -f "$MODDIR/rom_defaults.sh" ] && ( sh "$MODDIR/rom_defaults.sh" >/dev/null 2>&1 & )
 (
   for part in animations.sh fod_service.sh dramlock.sh dlfix.sh perf_tweaks.sh messenger_bg.sh otp_autofix.sh; do
     if [ -f "$MODDIR/$part" ]; then

@@ -29,7 +29,8 @@ fi
 # Safe mode (v10): if 4 boots in a row never reach "boot completed + 20 s", the props are skipped until you delete
 # /data/adb/fod/safe.flag. (v7: 3 boots / 60 s - installing several modules and rebooting quickly tripped it.)
 # The refresh controller and the download-lag fix are NOT affected by safe mode.
-SF_LATCH_UNSIGNALED=1; SF_BACKPRESSURE=1; SF_BUFFERS=3; SF_SKIA_THREADED=1
+# Match the screenshot: force-latch OFF, automatic single-layer latch ON.
+SF_LATCH_UNSIGNALED=0; SF_AUTO_LATCH_UNSIGNALED=1; SF_BACKPRESSURE=1; SF_BUFFERS=3; SF_SKIA_THREADED=1
 DEX_INSTALL_VERIFY=1   # install-time dexopt = "verify" (cheap); the idle background dexopt compiles apps later
 CAP_FIX=0              # v10.4 SAFETY: never overlay or scale battery sysfs nodes.
 FAST_FIRST_BOOT=1      # v10: first boot after install / OTA / module change: "optimizing apps" = verify only (very fast)
@@ -38,12 +39,19 @@ BOOT_THREADS=0         # v10: dex2oat threads used while booting; 0 = all CPU co
 BC=$D/bootcount; N=$(cat $BC 2>/dev/null); case "$N" in ''|*[!0-9]*) N=0;; esac
 N=$((N+1)); echo $N > $BC
 [ $N -ge 4 ] && [ ! -f $D/safe.flag ] && { touch $D/safe.flag; echo "$(date '+%m-%d %T') bootcount=$N -> safe mode ON" >> $D/safe.log; }
+[ -f "$MODDIR/rom_defaults_lib.sh" ] && . "$MODDIR/rom_defaults_lib.sh"
 if [ -f $D/safe.flag ]; then
   echo "$(date '+%m-%d %T') safe mode: props skipped (rm $D/safe.flag to re-enable)" >> $D/safe.log
+  # Persistent screenshot overrides must not survive the bootloop escape hatch.
+  command -v rom_props_restore >/dev/null 2>&1 && rom_props_restore
 else
   RP=resetprop; command -v resetprop >/dev/null 2>&1 || RP=setprop
-  [ "$SF_LATCH_UNSIGNALED" = 1 ] && $RP debug.sf.latch_unsignaled 1
+  case "$SF_LATCH_UNSIGNALED" in 0|1) $RP debug.sf.latch_unsignaled "$SF_LATCH_UNSIGNALED" ;; esac
+  case "$SF_AUTO_LATCH_UNSIGNALED" in 0|1) $RP debug.sf.auto_latch_unsignaled "$SF_AUTO_LATCH_UNSIGNALED" ;; esac
   [ "$SF_BACKPRESSURE" = 1 ] && $RP debug.sf.disable_backpressure 1
+  if command -v rom_props_apply >/dev/null 2>&1; then
+    if [ -f "$D/rom-defaults.disabled" ]; then rom_props_restore; else rom_props_apply; fi
+  fi
   [ "$SF_BUFFERS" != 0 ] && $RP ro.surface_flinger.max_frame_buffer_acquired_buffers "$SF_BUFFERS"
   [ "$SF_SKIA_THREADED" = 1 ] && $RP debug.renderengine.backend skiaglthreaded
   if [ "$DEX_INSTALL_VERIFY" = 1 ]; then
