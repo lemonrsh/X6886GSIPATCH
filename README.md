@@ -1,10 +1,71 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## Level 2 v1: module CPU overhead and stability only
+## Level 2 v2: wake/boot-safe 144 Hz ↔ 120 Hz recovery
 
-This update optimizes **the module's own background work**; it does not change
-phone tuning or remove features. **Flash the ZIP in Magisk and reboot.** The
+**Flash the new ZIP in Magisk and reboot.** Version code: **139**. The module ID
+is unchanged, so this updates the existing module rather than adding a second
+refresh controller.
+
+This fixes two software recovery gaps behind intermittent FOD-at-144 reports:
+a cached “120 Hz applied” result could survive a wake-time display override, and
+three unsuccessful pin requests could stop further requests until the slow rescan.
+
+- **Pre-arm 120 Hz during early boot and sleep/AOD.** The existing
+  `post-fs-data.sh` supervisor starts before `sys.boot_completed`; as soon as
+  SurfaceFlinger exposes supported modes, it requests 120 Hz. A full power-off or
+  reboot starts discovery again; no mode IDs or old acknowledgements are reused.
+  Nothing can run while the phone is powered off, or before Android/Magisk and
+  SurfaceFlinger exist. Bootloader/vendor firmware is not changed.
+- **Wake invalidates the cached display result, even if the target is still
+  120 Hz.** Follow early Android power and bundled bridge sleep/wake logs, with
+  builtin panel reads as a fallback. A suspend-like loop gap also triggers
+  recovery; a bounded framework power snapshot reconciles missed edges every
+  10 seconds. Sleep keeps 120 Hz pre-armed. Wake has a **1-second 120 Hz guard**
+  while HAL/SystemUI registers FOD; an active prompt/press/HBM/SOFOD keeps it there.
+- **144 Hz returns when FOD is inactive.** A short **150 ms upshift settle**
+  coalesces release/cancel callbacks to avoid bouncing 120 → 144 → 120 between
+  touches. Downshifts have no added debounce. Existing 50 ms lease / 100 ms press
+  checks remain; these are software intervals, not panel-latency guarantees.
+- **Recover instead of giving up.** Initial pin retries are fast, with continued
+  bounded backoff up to 5 seconds for persistent failures. Both rates are observed
+  periodically (120 Hz every second, normal 144 Hz every 5 seconds); a mismatch
+  invalidates the ACK and repairs physical mode and live framework votes. Mode
+  tables are rediscovered after failures and SF process identity changes.
+- **Refresh settings are audited, not just cached.** Check live min/peak votes
+  every 5 seconds at 120 Hz / 15 seconds at 144 Hz, and immediately on target/wake
+  changes or a verified-mode override. Original values and uninstall restoration
+  are retained. Binder CLI calls use a 1-second timeout when supported; display
+  and fingerprint dumps use their native timeouts.
+- **Recover missed fingerprint events safely.** Reseed current operations after
+  wake/boot/restarts and periodically. Unknown/failed snapshots do not mean “no
+  prompt”; a snapshot cannot overwrite a newer bridge event or a recent cancel.
+  The bridge's earliest screen-off sensor press now requests 120 Hz before replay.
+
+Only an **observed matching mode ID and physical/render rate** can acknowledge a
+fresh HBM/SOFOD token. The existing roughly 300 ms fail-open helper wait, 8-second
+helper leases, HBM temperature/timeout safety, HAL patches, 0.4× animations,
+4266/1866 MHz DRAM policy and other performance/download tuning are retained.
+
+**Validation:** 108 host regressions across bash, dash, mksh and BusyBox ash,
+including repeated wake/policy overrides, missing events, stalled Binder CLI,
+more than three failed requests, changed mode tables and simulated cold boots.
+These are **not on-device validation**. The panel/ROM must expose a compatible
+144/120 pair; driver latency, thermal restrictions, zero flicker and universal
+biometric reliability cannot be guaranteed. Test repeated screen-off FOD, normal
+wake, app prompts, enrolment and a full power-off/reboot on the phone. Keep the
+previous release ZIP for rollback.
+
+Plain-text diagnostics (includes screen/trigger/retry state):
+
+```sh
+su -c 'sh /data/adb/modules/X6886_GSI_PATCH_level_1_by_lemonrsh/diag.sh refresh'
+```
+
+## Previous: Level 2 v1 — module CPU overhead and stability only
+
+That release optimized **the module's own background work** without changing
+phone tuning or removing features. Its optimizations are retained. **Flash the ZIP in Magisk and reboot.** The
 version code is **138**. The module ID deliberately remains
 `X6886_GSI_PATCH_level_1_by_lemonrsh` so this is an in-place update, not a second
 module fighting the old one.

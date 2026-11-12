@@ -1,12 +1,13 @@
 #!/system/bin/sh
-# X6886: 144 Hz normally, 120 Hz for authentication/enrolment/HBM/SOFOD.
-# One writer owns both the SurfaceFlinger pin and the matching framework votes.
+# One writer: 144 Hz interactive / verified 120 Hz FOD, sleep and wake guard.
+# Boot-scoped state and monotonic deadlines; never persist/guess display mode IDs.
 MODDIR=${0%/*}
 MAIN_PID=$$
 D=/data/adb/fod
 LOG=$D/refresh.log
 CONF=$D/refresh.conf
 SESSIONF=$D/.refresh_session
+POWERF=$D/.refresh_power
 GPID=$D/.refresh_logcat.pid
 EPOCHF=$D/.refresh_epoch
 RECONCILE_S=120
@@ -19,10 +20,12 @@ mkdir -p "$D"
 case "$RECONCILE_S" in ''|*[!0-9]*) RECONCILE_S=120 ;; esac
 [ "$RECONCILE_S" -ge 10 ] || RECONCILE_S=10
 refresh_boot
+REFRESH_TIMEOUT=0
+if command -v timeout >/dev/null 2>&1 && timeout 1 true >/dev/null 2>&1; then REFRESH_TIMEOUT=1; fi
 renice -n -8 -p $$ >/dev/null 2>&1
 log() { echo "$(date +%T) $*" >> "$LOG"; }
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt 60000 ] && mv -f "$LOG" "$LOG.old"
-log "144/120 Hz controller start (pid $$)"
+log "144/120 Hz wake-safe controller start (pid $$)"
 
 # --- refresh helpers (regression-tested by .github/tests/test_fixes.py) ---
 refresh_modes() {   # SurfaceFlinger dump -> base mode ID, FOD mode ID, base Hz
@@ -95,8 +98,8 @@ refresh_event_parse() {   # only events emitted by the bundled Transsion bridge
   REFRESH_EVENT=""
   case "$1" in
     *"ISession::authenticate called"*|*"ISession::enroll called"*|*"ISession::detectInteraction called"*|*"onUiReady"*|*"auto-starting authenticate for SOFOD"*) REFRESH_EVENT=session_on ;;
-    *"ICancellationSignal::cancel invoked"*|*"ISession::close called"*|*"Authentication SUCCEEDED"*|*"Enrollment completed successfully"*) REFRESH_EVENT=session_off ;;
-    *"onPointerDown"*|*"display on, finger still held at ("*) REFRESH_EVENT=touch_on ;;
+    *"ICancellationSignal::cancel invoked"*|*"ISession::close called"*|*"Authentication SUCCEEDED"*|*"Enrollment completed successfully"*|*"SOFOD authentication succeeded while display was fully asleep"*) REFRESH_EVENT=session_off ;;
+    *"onPointerDown"*|*"display on, finger still held at ("*|*"sensor pressed while screen off"*) REFRESH_EVENT=touch_on ;;
     *"onPointerUp"*|*"onPointerCancel"*|*"Touch release (BTN_TOUCH 0)"*|*"Tracking ID lifted"*|*"FOD touch timed out"*) REFRESH_EVENT=touch_off ;;
   esac
 }
@@ -110,13 +113,51 @@ refresh_framework() {   # Hz, user; lower min before peak on downshift (reverse 
       module_setting_set system "$2" min_refresh_rate "$1"
   fi
 }
-refresh_seed_session() {   # startup during an already visible fingerprint prompt
-  dumpsys -t 2 fingerprint 2>/dev/null | awk '
-    /Current (client|operation):/ && /Fingerprint(Authentication|Enroll|Detect)Client/ { print 1; found=1; exit }
-    END { if (!found) print 0 }'
+refresh_seed_session() {   # - means unavailable/unknown, NOT proof that a prompt is absent
+  dumpsys -t 1 fingerprint 2>/dev/null | awk '
+    /Current (client|operation):/ {
+      if (/Fingerprint(Authentication|Enroll|Detect)Client/) { print 1; found=1; exit }
+      if (/:[ \t]*(null|None|none|<none>)[ \t]*$/) idle=1
+    }
+    END { if (!found) print (idle ? 0 : "-") }'
+}
+refresh_power_parse() {   # bundled bridge + Android power edges, no per-line subprocess
+  REFRESH_POWER=""
+  case "$1" in
+    *"Waking up from "*|*"Waking up power group"*|*"[SleepState: AWAKE]"*) REFRESH_POWER=on ;;
+    *"Going to sleep"*|*"Sleeping (uid"*|*"Sleeping power group"*|*"Powering off display group"*|*"Dozing..."*|*"[SleepState: OFF]"*|*"[SleepState: DOZE]"*) REFRESH_POWER=off ;;
+  esac
+}
+refresh_panel() {   # authoritative DPMS first; backlight fallback, all builtin reads
+  PANEL=unknown
+  _rp_value=""
+  if [ -r /sys/class/drm/card0-DSI-1/dpms ]; then
+    { IFS= read -r _rp_value < /sys/class/drm/card0-DSI-1/dpms; } 2>/dev/null
+    case "$_rp_value" in On|on|ON) PANEL=on ;; Off|off|OFF|Doze|DozeSuspend) PANEL=off ;; esac
+    return
+  fi
+  for _rp_node in /sys/class/leds/lcd-backlight/brightness /sys/class/backlight/*/brightness; do
+    [ -r "$_rp_node" ] || continue
+    { IFS= read -r _rp_value < "$_rp_node"; } 2>/dev/null
+    case "$_rp_value" in ''|*[!0-9]*) ;; 0) PANEL=off; return ;; *) PANEL=on; return ;; esac
+  done
+}
+refresh_power_state() {   # slow independent fallback when both event/panel edges were missed
+  dumpsys -t 1 power 2>/dev/null | awk '
+    /mWakefulness=/ {
+      sub(/.*mWakefulness=/, ""); sub(/[^A-Za-z].*/, "")
+      if ($0 == "Awake" || $0 == "Dreaming") print "on"
+      else if ($0 == "Asleep" || $0 == "Dozing") print "off"
+      exit
+    }'
+}
+refresh_exec() {   # bound Binder CLI stalls where Toybox/BusyBox timeout is available
+  if [ "${REFRESH_TIMEOUT:-0}" = 1 ]; then timeout 1 "$@"; else command "$@"; fi
 }
 # --- end refresh helpers ---
 
+# settings_state.sh still owns snapshot/restore semantics; only bound its CLI here.
+settings() { refresh_exec settings "$@"; }
 stop_events() {
   _se_pid=""
   [ -r "$GPID" ] && read -r _se_pid < "$GPID"
@@ -128,7 +169,7 @@ stop_events() {
   esac
   if [ -n "$WATCH_PID" ]; then kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true; fi
   WATCH_PID=""
-  rm -f "$GPID" "$SESSIONF"
+  rm -f "$GPID" "$SESSIONF" "$POWERF"
 }
 cleanup() {
   stop_events
@@ -137,19 +178,25 @@ cleanup() {
 trap 'log "controller stopped by signal"; exit 0' INT TERM
 trap '_exit=$?; trap - EXIT; log "controller exit rc=$_exit"; cleanup' EXIT
 watch_events() {
-  # Do not inherit the controller cleanup trap into a background worker on mksh.
   trap - INT TERM EXIT
   while [ ! -f "$D/.ui_stopping" ] && kill -0 "$MAIN_PID" 2>/dev/null; do
-    sh -c 'echo $$ > "$1"; exec logcat -b all -T 1 -v brief oplus_udfps_transsion:I "*:S"' x "$GPID" 2>/dev/null |
+    sh -c 'echo $$ > "$1"; exec logcat -b all -T 1 -v brief oplus_udfps_transsion:I PowerManagerService:I PowerGroup:I "*:S"' x "$GPID" 2>/dev/null |
     (
       trap - INT TERM EXIT
-      _we_session=0; _we_touch=0; _we_epoch=""
+      _we_session=0; _we_touch=0; _we_epoch=""; _we_seq=0
       while IFS= read -r line; do
         _we_owner=""; [ -r "$D/.refresh.pid" ] && read -r _we_owner < "$D/.refresh.pid"
         [ "$_we_owner" = "$MAIN_PID" ] && kill -0 "$MAIN_PID" 2>/dev/null || exit 0
         _we_new=""; [ -r "$EPOCHF" ] && read -r _we_new < "$EPOCHF"
         if [ "$_we_new" != "$_we_epoch" ]; then
           _we_session=0; _we_touch=0; _we_epoch=$_we_new
+        fi
+        refresh_power_parse "$line"
+        if [ -n "$REFRESH_POWER" ]; then
+          refresh_now
+          _we_seq=$((_we_seq+1))
+          printf '%s %s %s %s %s\n' "$REFRESH_BOOT" "$REFRESH_NOW" "$REFRESH_POWER" "$_we_epoch" "$_we_seq" > "$POWERF.tmp" &&
+            mv -f "$POWERF.tmp" "$POWERF"
         fi
         refresh_event_parse "$line"; _we_event=$REFRESH_EVENT
         case "$_we_event" in
@@ -159,11 +206,10 @@ watch_events() {
           touch_off) _we_touch=0 ;;
           *) continue ;;
         esac
-        refresh_now
-        # A lost terminal log must not pin 120 Hz forever. Any new bridge
-        # activity renews the 5 min session lease; touch-only leases last 8 s.
+        refresh_now; _we_seq=$((_we_seq+1))
+        # Lost terminal events cannot pin 120 forever: auth 5 min, touch-only 8 s.
         if [ "$_we_session" = 1 ]; then _we_ttl=30000; else _we_ttl=800; fi
-        printf '%s %s %s %s %s\n' "$REFRESH_BOOT" "$((REFRESH_NOW + _we_ttl))" "$_we_session" "$_we_touch" "$_we_epoch" > "$SESSIONF.tmp" &&
+        printf '%s %s %s %s %s %s %s %s\n' "$REFRESH_BOOT" "$((REFRESH_NOW + _we_ttl))" "$_we_session" "$_we_touch" "$_we_epoch" "$_we_seq" "$_we_event" "$REFRESH_NOW" > "$SESSIONF.tmp" &&
           mv -f "$SESSIONF.tmp" "$SESSIONF"
       done
     )
@@ -173,45 +219,123 @@ watch_events() {
   done
 }
 WATCH_PID=""
-stop_events  # also stop a logcat child left by a previous crashed controller
+stop_events
 rm -f "$D/.refresh_ready" "$D/.refresh_applied" "$D/.refresh_want" "$D/refresh.cache" "$D/.refresh_stream_reset"
 EPOCH_N=0; EPOCH=$$-0
 printf '%s\n' "$EPOCH" > "$EPOCHF"
 watch_events & WATCH_PID=$!
 
-BASE_ID=""; FP_ID=""; BASE_HZ=120; SFPID=""; HALPID=""
+BASE_ID=""; FP_ID=""; BASE_HZ=120; SFPID=""; SFSTAMP=""; HALPID=""; HALSTAMP=""
 APPLIED=""; ACK=""; FRAMEWORK_HZ=""; USER_ID=""; BOOT=0; SEEDED=0
-SF_ID=""; SF_HZ=""; SF_RENDER=""; REPLY=none; LAST_WANT=""; CHECKED_TOKENS=""
-TICK=0; NEXT_SCAN=0; NEXT_SETTINGS=0; NEXT_CHECK=0; NEXT_VERIFY=0; NEXT_REQUEST=0
+SF_ID=""; SF_HZ=""; SF_RENDER=""; REPLY=none; LAST_WANT=""; CHECKED_TOKENS="- -"
+TICK=0; NEXT_SCAN=0; NEXT_SETTINGS=0; NEXT_CHECK=0; NEXT_VERIFY=0; NEXT_REQUEST=0; NEXT_SEED=0; NEXT_POWER=0; NEXT_RESCAN=0
 LAST_MODES=unresolved; ATTEMPTS=0; WARNED=0
+SCREEN=unknown; PANEL_LAST=unknown; POWER_KEY=""; SESSION_KEY=none; LAST_SESSION=none
+SEED_AUTH=-; SEED_EVENT=none; SEED_UNTIL=0; WAKE_UNTIL=0; UP_AT=0; NEXT_GAP_LOG=0
+refresh_now; START_UNTIL=$((REFRESH_NOW+150)); LAST_LOOP=$REFRESH_NOW
+# --- refresh recovery helpers (host-tested in test_refresh_recovery.py) ---
+invalidate() {
+  APPLIED=""; ACK=""; ATTEMPTS=0; WARNED=0
+  NEXT_REQUEST=$REFRESH_NOW; NEXT_VERIFY=$REFRESH_NOW
+  if [ "${1:-0}" = 1 ]; then FRAMEWORK_HZ=""; NEXT_SETTINGS=$REFRESH_NOW; fi
+  rm -f "$D/.refresh_applied"
+}
 new_epoch() {
   EPOCH_N=$((EPOCH_N+1)); EPOCH=$$-$EPOCH_N
   printf '%s\n' "$EPOCH" > "$EPOCHF.tmp" && mv -f "$EPOCHF.tmp" "$EPOCHF"
-  rm -f "$SESSIONF"
-  SEEDED=0
+  rm -f "$SESSIONF" "$POWERF"
+  SEEDED=0; SEED_AUTH=-; NEXT_SEED=0
 }
+power_edge() {   # pre-arm sleep; wake gets 1 s for HAL/SystemUI to re-register FOD
+  SCREEN=$1
+  [ "$1" = on ] && WAKE_UNTIL=$((REFRESH_NOW+100))
+  invalidate 1
+  NEXT_CHECK=$REFRESH_NOW; NEXT_SEED=0
+  log "screen=$1 source=$2; invalidated display ACK"
+}
+recheck_gap() {   # a pause can happen BETWEEN loops or INSIDE an IPC/observation
+  if [ "$1" = resume ]; then
+    WAKE_UNTIL=$((REFRESH_NOW+100)); invalidate 1
+  elif [ -n "$APPLIED" ]; then
+    # A result observed before a long/paused iteration is stale too. Do not
+    # confuse a known slow/failed CLI with another wake or reset its backoff.
+    invalidate 1
+  fi
+  NEXT_VERIFY=$REFRESH_NOW; NEXT_CHECK=0; NEXT_SEED=0; NEXT_POWER=0
+  if [ "$REFRESH_NOW" -ge "$NEXT_GAP_LOG" ]; then
+    log "resume/loop gap; rechecking display and fingerprint state ($1)"
+    NEXT_GAP_LOG=$((REFRESH_NOW+1000))
+  fi
+}
+request_mode() {
+  OUT=$(refresh_exec service call SurfaceFlinger 1035 i32 "$ID" 2>&1); RC=$?
+  REPLY=$(refresh_reply "$RC" "$OUT")
+  printf 'target=%s mode=%s exit=%s reply=%s\n%.1024s\n' "$WANT" "$ID" "$RC" "$REPLY" "$OUT" > "$D/refresh_last_reply.txt"
+  # Fast initial retries, then bounded continued recovery (never a 3-call ceiling).
+  [ "$ATTEMPTS" -ge 6 ] || ATTEMPTS=$((ATTEMPTS+1))
+  refresh_now
+  case "$ATTEMPTS" in 1|2) NEXT_REQUEST=$((REFRESH_NOW+10)) ;;
+    3|4|5) NEXT_REQUEST=$((REFRESH_NOW+100)) ;; *) NEXT_REQUEST=$((REFRESH_NOW+500)) ;; esac
+  NEXT_VERIFY=$REFRESH_NOW
+}
+read_session() {
+  SESSION_KEY=none; AUTH=0; TOUCH=0; SESSION_EVENT=""
+  _ss_boot=""; _ss_until=""; _ss_auth=0; _ss_touch=0; _ss_epoch=""; _ss_seq=""; SESSION_AT=0
+  [ -r "$SESSIONF" ] || return 0
+  read -r _ss_boot _ss_until _ss_auth _ss_touch _ss_epoch _ss_seq SESSION_EVENT SESSION_AT < "$SESSIONF"
+  case "$_ss_until:$_ss_seq:$SESSION_AT" in *[!0-9:]*|:*|*::*) return 0 ;; esac
+  case "$SESSION_AT" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$_ss_boot" = "$REFRESH_BOOT" ] && [ "$_ss_epoch" = "$EPOCH" ] || return 0
+  SESSION_KEY=$_ss_epoch-$_ss_seq
+  if [ "$_ss_until" -gt "$REFRESH_NOW" ]; then AUTH=$_ss_auth; TOUCH=$_ss_touch; fi
+}
+seed_session() {   # never let a slow snapshot overwrite a newer bridge event
+  read_session; _seed_before=$SESSION_KEY
+  _seed=$(refresh_seed_session)
+  refresh_now; read_session
+  if [ "$SESSION_KEY" = "$_seed_before" ] &&
+     { [ "$SESSION_KEY" = none ] || [ $((REFRESH_NOW-SESSION_AT)) -ge 100 ]; }; then
+    case "$_seed" in 0|1)
+      SEED_AUTH=$_seed; SEED_EVENT=$SESSION_KEY; SEED_UNTIL=$((REFRESH_NOW+30000)); SEEDED=1 ;;
+    esac
+  fi
+  if [ "$SEEDED" = 0 ]; then NEXT_SEED=$((REFRESH_NOW+100))
+  elif [ "$WANT" = 120 ]; then NEXT_SEED=$((REFRESH_NOW+500))
+  else NEXT_SEED=$((REFRESH_NOW+3000)); fi
+}
+# --- end refresh recovery helpers ---
 # --- runtime snapshot helper (host-tested in test_low_cpu.py) ---
 RUNTIME_KEY=""
 runtime() {
-  _runtime_key="$$ $WATCH_PID $SFPID ${WANT:--} ${APPLIED:--} ${SF_ID:--} ${SF_HZ:--} ${SF_RENDER:--} $REPLY"
-  # Keep the 1 s liveness checks, but do not rewrite an identical idle snapshot.
-  # Actual display observations pass 1 so their timestamp is still refreshed.
+  _runtime_key="$$ $WATCH_PID $SFPID ${WANT:--} ${APPLIED:--} ${SF_ID:--} ${SF_HZ:--} ${SF_RENDER:--} $REPLY ${SCREEN:-unknown} ${WHY:--} ${ATTEMPTS:-0}"
+  # Last state/observation, not a heartbeat: avoid identical per-second writes.
   if [ "${1:-0}" != 1 ] && [ "$_runtime_key" = "$RUNTIME_KEY" ] && [ -f "$D/.refresh_runtime" ]; then return 0; fi
   refresh_now
-  printf 'pid=%s watcher=%s sfpid=%s up_cs=%s target=%s verified=%s active_id=%s physical_hz=%s render_hz=%s reply=%s\n' \
+  printf 'pid=%s watcher=%s sfpid=%s up_cs=%s target=%s verified=%s active_id=%s physical_hz=%s render_hz=%s reply=%s screen=%s trigger=%s retries=%s\n' \
     "$$" "$WATCH_PID" "$SFPID" "$REFRESH_NOW" "${WANT:--}" "${APPLIED:--}" \
-    "${SF_ID:--}" "${SF_HZ:--}" "${SF_RENDER:--}" "$REPLY" > "$D/.refresh_runtime.tmp" &&
+    "${SF_ID:--}" "${SF_HZ:--}" "${SF_RENDER:--}" "$REPLY" "${SCREEN:-unknown}" "${WHY:--}" "${ATTEMPTS:-0}" > "$D/.refresh_runtime.tmp" &&
     mv -f "$D/.refresh_runtime.tmp" "$D/.refresh_runtime" && RUNTIME_KEY=$_runtime_key
 }
 # --- end runtime snapshot helper ---
 configure_modes() {
-  BASE_ID=""; FP_ID=""
-  _cm_modes=$(dumpsys -t 2 SurfaceFlinger --displays 2>/dev/null | refresh_modes)
-  [ -n "$_cm_modes" ] || _cm_modes=$(dumpsys -t 2 SurfaceFlinger 2>/dev/null | refresh_modes)
+  _cm_old="$BASE_ID $FP_ID $BASE_HZ"
+  _cm_dump=$(dumpsys -t 2 SurfaceFlinger --displays 2>/dev/null)
+  _cm_modes=$(printf '%s\n' "$_cm_dump" | refresh_modes)
+  if [ -z "$_cm_modes" ]; then
+    _cm_full=$(dumpsys -t 2 SurfaceFlinger 2>/dev/null)
+    [ -z "$_cm_full" ] || _cm_dump=$_cm_full
+    _cm_modes=$(printf '%s\n' "$_cm_dump" | refresh_modes)
+  fi
+  refresh_now
   if [ -n "$_cm_modes" ]; then
     read -r BASE_ID FP_ID BASE_HZ <<EOF
 $_cm_modes
 EOF
+  elif [ -n "$FP_ID" ] && [ -z "$_cm_dump" ]; then
+    # A transient empty dump on the SAME SF process must not disable recovery.
+    NEXT_SCAN=$((REFRESH_NOW+100)); return
+  else
+    BASE_ID=""; FP_ID=""; BASE_HZ=120
   fi
   if [ "$_cm_modes" != "$LAST_MODES" ]; then
     if [ -n "$FP_ID" ]; then
@@ -222,14 +346,14 @@ EOF
     fi
     LAST_MODES=$_cm_modes
   fi
-  APPLIED=""; ACK=""; FRAMEWORK_HZ=""; ATTEMPTS=0; WARNED=0
-  NEXT_REQUEST=$TICK; NEXT_VERIFY=$TICK
-  rm -f "$D/.refresh_applied"
+  [ "$_cm_modes" = "$_cm_old" ] || invalidate 1
   if [ -n "$FP_ID" ]; then
     printf '%s %s\n' "$REFRESH_BOOT" "$$" > "$D/.refresh_ready.tmp" &&
       mv -f "$D/.refresh_ready.tmp" "$D/.refresh_ready"
+    NEXT_SCAN=$((REFRESH_NOW + RECONCILE_S * 100))
   else
     rm -f "$D/.refresh_ready"
+    NEXT_SCAN=$((REFRESH_NOW+100))
   fi
 }
 observe() {
@@ -245,123 +369,171 @@ EOF
 }
 while [ ! -f "$D/.ui_stopping" ]; do
   refresh_now
+  # /proc/uptime includes deep sleep; loop counters do not. Also catch a whole
+  # sleep/wake cycle whose panel/log edges were both missed while suspended.
+  if [ $((REFRESH_NOW-LAST_LOOP)) -ge 100 ]; then
+    recheck_gap resume
+  fi
+  LOOP_START=$REFRESH_NOW
+  if [ $((TICK % 2)) = 0 ]; then
+    refresh_panel
+    if [ "$PANEL" != unknown ] && [ "$PANEL" != "$PANEL_LAST" ]; then
+      PANEL_LAST=$PANEL; power_edge "$PANEL" panel
+    fi
+  fi
+  if [ -r "$POWERF" ]; then
+    _pw_boot=""; _pw_at=""; _pw_state=""; _pw_epoch=""; _pw_seq=""
+    read -r _pw_boot _pw_at _pw_state _pw_epoch _pw_seq < "$POWERF"
+    if [ "$_pw_boot" = "$REFRESH_BOOT" ] && [ "$_pw_epoch" = "$EPOCH" ] && [ "$_pw_epoch-$_pw_seq" != "$POWER_KEY" ]; then
+      POWER_KEY=$_pw_epoch-$_pw_seq
+      case "$_pw_state" in on|off) power_edge "$_pw_state" event ;; esac
+    fi
+  fi
   if [ -n "$SFPID" ] && [ ! -r "/proc/$SFPID/comm" ]; then
-    rm -f "$D/.refresh_ready" "$D/.refresh_applied"
-    APPLIED=""; ACK=""; NEXT_CHECK=$TICK
+    rm -f "$D/.refresh_ready"; invalidate 1; NEXT_CHECK=0
   fi
   if [ -f "$D/.refresh_stream_reset" ]; then
     rm -f "$D/.refresh_stream_reset"
-    new_epoch; NEXT_CHECK=$TICK
+    new_epoch; NEXT_CHECK=0; invalidate 1
     log "bridge log stream ended; reseeding fingerprint session"
   fi
-  if [ "$TICK" -ge "$NEXT_CHECK" ]; then
-    # The supervisor can be blocked waiting for this child. Reuse this existing
-    # 1 s check to stop on live disable/remove flags, without another poller.
+  if [ "$REFRESH_NOW" -ge "$NEXT_CHECK" ]; then
     [ -d "$MODDIR" ] && [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] || break
-    NEXT_CHECK=$((TICK+20))
-    if [ -z "$SFPID" ] || [ ! -r "/proc/$SFPID/comm" ]; then
-      SFPID=$(pidof surfaceflinger 2>/dev/null | cut -d' ' -f1)
-      NEXT_SCAN=$TICK
+    NEXT_CHECK=$((REFRESH_NOW+100))
+    if ! process_unchanged "$SFPID" "$SFSTAMP"; then
+      _sf=$(pidof surfaceflinger 2>/dev/null); _sf=${_sf%% *}
+      _sf_stamp=""; process_stamp "$_sf" && _sf_stamp=$PROC_STAMP
+      if [ "$_sf:$_sf_stamp" != "$SFPID:$SFSTAMP" ]; then
+        SFPID=$_sf; SFSTAMP=$_sf_stamp; BASE_ID=""; FP_ID=""; BASE_HZ=120
+        NEXT_SCAN=0; invalidate 1; NEXT_SEED=0
+        rm -f "$D/.refresh_ready"
+        log "SurfaceFlinger identity changed; discovering fresh mode IDs"
+      fi
     fi
-    if [ -n "$HALPID" ] && [ ! -r "/proc/$HALPID/comm" ]; then
-      # logcat is independent of the HAL. Killing/reaping the pipeline here
-      # made recovery fragile; invalidate its session epoch instead.
-      log "fingerprint HAL restarted; clearing stale session without stopping controller"
-      new_epoch; HALPID=""
+    if ! process_unchanged "$HALPID" "$HALSTAMP"; then
+      _hal=$(pidof android.hardware.biometrics.fingerprint-service 2>/dev/null); _hal=${_hal%% *}
+      _hal_stamp=""; process_stamp "$_hal" && _hal_stamp=$PROC_STAMP
+      if [ "$_hal:$_hal_stamp" != "$HALPID:$HALSTAMP" ]; then
+        if [ -n "$HALPID" ]; then
+          log "fingerprint HAL restarted; clearing stale session without stopping controller"
+          new_epoch; invalidate 1
+        fi
+        HALPID=$_hal; HALSTAMP=$_hal_stamp
+      fi
     fi
-    [ -n "$HALPID" ] || HALPID=$(pidof android.hardware.biometrics.fingerprint-service 2>/dev/null | cut -d' ' -f1)
     if ! kill -0 "$WATCH_PID" 2>/dev/null; then
       log "bridge watcher exited; starting a new listener"
-      watch_events & WATCH_PID=$!
-      new_epoch
+      new_epoch; watch_events & WATCH_PID=$!; invalidate 1
     fi
-    if [ "$BOOT" = 0 ] && [ "$(getprop sys.boot_completed)" = 1 ]; then BOOT=1; fi
+    if [ "$BOOT" = 0 ] && [ "$(getprop sys.boot_completed)" = 1 ]; then
+      BOOT=1; invalidate 1; NEXT_SEED=0
+    fi
     if [ "$BOOT" = 1 ]; then
-      _user=$(cmd activity get-current-user 2>/dev/null)
+      _user=$(refresh_exec cmd activity get-current-user 2>/dev/null)
       case "$_user" in ''|*[!0-9]*) ;; *)
-        if [ "$_user" != "$USER_ID" ]; then USER_ID=$_user; FRAMEWORK_HZ=""; NEXT_SETTINGS=0; fi ;;
+        if [ "$_user" != "$USER_ID" ]; then
+          USER_ID=$_user; invalidate 1; NEXT_SEED=0
+        fi ;;
       esac
-      if [ "$SEEDED" = 0 ]; then
-        _seed=$(refresh_seed_session); refresh_now
-        ( set -C; printf '%s %s %s 0 %s\n' "$REFRESH_BOOT" "$((REFRESH_NOW+30000))" "$_seed" "$EPOCH" > "$SESSIONF" ) 2>/dev/null || true
-        SEEDED=1
-      fi
+    fi
+    if [ "$REFRESH_NOW" -ge "$NEXT_POWER" ]; then
+      _power=$(refresh_power_state)
+      refresh_now; NEXT_POWER=$((REFRESH_NOW+1000))
+      case "$_power" in on|off)
+        [ "$_power" = "$SCREEN" ] || power_edge "$_power" framework ;;
+      esac
     fi
     runtime
   fi
-  if [ -n "$SFPID" ] && [ "$TICK" -ge "$NEXT_SCAN" ]; then
-    configure_modes
-    NEXT_SCAN=$((TICK + RECONCILE_S * 20))
-    [ -n "$FP_ID" ] || NEXT_SCAN=$((TICK+200))
-  fi
+  if [ -n "$SFPID" ] && [ "$REFRESH_NOW" -ge "$NEXT_SCAN" ]; then configure_modes; fi
   refresh_now
   refresh_lease hbm; HBM_LEASE=$REFRESH_LEASE
   refresh_lease sofod; SO_LEASE=$REFRESH_LEASE
   if [ $((TICK % 2)) = 0 ]; then PRESS=$(getprop sys.phh.oplus.fppress); fi
+  read_session
+  # A fingerprint snapshot is usable only until the next bridge event/epoch.
+  if [ "$SEED_EVENT" = "$SESSION_KEY" ] && [ "$SEED_UNTIL" -gt "$REFRESH_NOW" ] && [ "$SEED_AUTH" != - ]; then AUTH=$SEED_AUTH; fi
   WANT=$BASE_HZ; WHY=normal
-  _ss_boot=""; _ss_until=""; _ss_auth=0; _ss_touch=0; _ss_epoch=""
-  if [ -r "$SESSIONF" ]; then
-    read -r _ss_boot _ss_until _ss_auth _ss_touch _ss_epoch < "$SESSIONF"
-    case "$_ss_until" in ''|*[!0-9]*) _ss_until=0 ;; esac
-    if [ "$_ss_boot" = "$REFRESH_BOOT" ] && [ "$_ss_epoch" = "$EPOCH" ] && [ "$_ss_until" -gt "$REFRESH_NOW" ] &&
-       { [ "$_ss_auth" = 1 ] || [ "$_ss_touch" = 1 ]; }; then WANT=120; WHY=session; fi
-  fi
+  if [ "$BOOT" = 0 ] || { [ "$SEEDED" = 0 ] && [ "$REFRESH_NOW" -lt "$START_UNTIL" ]; }; then WANT=120; WHY=boot; fi
+  if [ "$SCREEN" = off ]; then WANT=120; WHY=screen-off; fi
+  if [ "$REFRESH_NOW" -lt "$WAKE_UNTIL" ]; then WANT=120; WHY=wake; fi
+  if [ "$AUTH" = 1 ] || [ "$TOUCH" = 1 ]; then WANT=120; WHY=session; fi
   if [ "$PRESS" = 1 ]; then WANT=120; WHY=press; fi
   if [ "$HBM_LEASE" != - ]; then WANT=120; WHY=hbm; fi
   if [ "$SO_LEASE" != - ]; then WANT=120; WHY=sofod; fi
+  # Downshifts are immediate. Coalesce terminal/up edges to avoid 120/144/120
+  # thrashing between pointer-up, HBM-off and a new authentication callback.
+  if [ "$WANT" = 120 ]; then UP_AT=0
+  elif [ "$LAST_WANT" = 120 ]; then
+    [ "$UP_AT" != 0 ] || UP_AT=$((REFRESH_NOW+15))
+    if [ "$REFRESH_NOW" -lt "$UP_AT" ]; then WANT=120; WHY=settle; fi
+  fi
   if [ "$WANT" != "$LAST_WANT" ]; then
     log "target=$WANT Hz trigger=$WHY"
-    LAST_WANT=$WANT; APPLIED=""; ACK=""; ATTEMPTS=0; WARNED=0
-    NEXT_REQUEST=$TICK; NEXT_VERIFY=$TICK; NEXT_SETTINGS=$TICK
-    rm -f "$D/.refresh_applied"
+    LAST_WANT=$WANT; invalidate
+    NEXT_SETTINGS=$REFRESH_NOW
   fi
   TOKENS="$HBM_LEASE $SO_LEASE"
-  if [ "$TOKENS" != "$CHECKED_TOKENS" ]; then ATTEMPTS=0; NEXT_REQUEST=$TICK; fi
+  if [ "$TOKENS" != "$CHECKED_TOKENS" ]; then
+    CHECKED_TOKENS=$TOKENS
+    # Even if target is already 120, a new hold must re-pin/re-observe after wake.
+    if [ "$TOKENS" != "- -" ]; then invalidate; fi
+  fi
+  if [ "$SESSION_KEY" != "$LAST_SESSION" ]; then
+    LAST_SESSION=$SESSION_KEY
+    case "$SESSION_EVENT" in session_on|touch_on) invalidate ;; esac
+  fi
   if [ -n "$FP_ID" ] && [ -n "$SFPID" ]; then
     if [ "$WANT" = 120 ]; then ID=$FP_ID; else ID=$BASE_ID; fi
-    # Pin first so the physical downshift does not wait for settings-provider IPC.
-    if [ "$APPLIED" != "$WANT" ] && [ "$ATTEMPTS" -lt 3 ] && [ "$TICK" -ge "$NEXT_REQUEST" ]; then
-      OUT=$(service call SurfaceFlinger 1035 i32 "$ID" 2>&1); RC=$?
-      REPLY=$(refresh_reply "$RC" "$OUT")
-      printf 'target=%s mode=%s exit=%s reply=%s\n%.1024s\n' "$WANT" "$ID" "$RC" "$REPLY" "$OUT" > "$D/refresh_last_reply.txt"
-      ATTEMPTS=$((ATTEMPTS+1)); NEXT_REQUEST=$((TICK+2)); NEXT_VERIFY=$TICK
+    if [ "$APPLIED" != "$WANT" ] && [ "$REFRESH_NOW" -ge "$NEXT_REQUEST" ]; then request_mode; fi
+    # Re-read live votes periodically, not only when our cached target changes.
+    if [ "$BOOT" = 1 ] && [ "$SETTINGS_RATE" = 1 ] && [ -n "$USER_ID" ] && [ "$REFRESH_NOW" -ge "$NEXT_SETTINGS" ]; then
+      if refresh_framework "$WANT" "$USER_ID"; then
+        FRAMEWORK_HZ=$WANT
+        refresh_now
+        if [ "$WANT" = 120 ]; then NEXT_SETTINGS=$((REFRESH_NOW+500)); else NEXT_SETTINGS=$((REFRESH_NOW+1500)); fi
+      else refresh_now; NEXT_SETTINGS=$((REFRESH_NOW+100)); fi
     fi
-    # A downshift must not sit behind the previous rate's 1 s retry timer.
-    if [ "$BOOT" = 1 ] && [ "$SETTINGS_RATE" = 1 ] && [ -n "$USER_ID" ] &&
-       [ "$TICK" -ge "$NEXT_SETTINGS" ] && [ "$FRAMEWORK_HZ" != "$WANT" ]; then
-      if refresh_framework "$WANT" "$USER_ID"; then FRAMEWORK_HZ=$WANT; fi
-      NEXT_SETTINGS=$((TICK+20))
-    fi
-    if { [ "$APPLIED" != "$WANT" ] && [ "$TICK" -ge "$NEXT_VERIFY" ]; } ||
-       [ "$TOKENS" != "$CHECKED_TOKENS" ] ||
-       { [ "$WANT" = 120 ] && [ "$TICK" -ge "$NEXT_VERIFY" ]; }; then
-      CHECKED_TOKENS=$TOKENS
+    if [ "$REFRESH_NOW" -ge "$NEXT_VERIFY" ]; then
       if observe; then
         if [ "$APPLIED" != "$WANT" ]; then
           log "$WANT Hz verified: mode=$SF_ID physical=$SF_HZ render=$SF_RENDER reply=$REPLY trigger=$WHY"
         fi
-        APPLIED=$WANT; WARNED=0
-        NEXT_VERIFY=$((TICK+100))
+        APPLIED=$WANT; WARNED=0; ATTEMPTS=0
+        refresh_now
+        if [ "$WANT" = 120 ]; then NEXT_VERIFY=$((REFRESH_NOW+100)); else NEXT_VERIFY=$((REFRESH_NOW+500)); fi
       else
+        refresh_now
         if [ "$WARNED" = 0 ] || [ -n "$APPLIED" ]; then
           log "$WANT Hz NOT verified: wanted_mode=$ID actual_mode=${SF_ID:--} physical=${SF_HZ:--} render=${SF_RENDER:--} reply=$REPLY trigger=$WHY"
           WARNED=1
         fi
-        APPLIED=""; ACK=""
-        rm -f "$D/.refresh_applied"
-        if [ "$ATTEMPTS" -lt 3 ]; then NEXT_VERIFY=$((TICK+2)); else NEXT_VERIFY=$((TICK+20)); fi
+        if [ -n "$APPLIED" ]; then
+          # An external wake/policy override is a NEW failure, not an exhausted
+          # old retry budget. Repair both physical pin and framework votes.
+          ATTEMPTS=0; NEXT_REQUEST=$REFRESH_NOW; NEXT_SETTINGS=$REFRESH_NOW; FRAMEWORK_HZ=""
+        fi
+        APPLIED=""; ACK=""; rm -f "$D/.refresh_applied"
+        if [ "$ATTEMPTS" -ge 3 ] && [ "$REFRESH_NOW" -ge "$NEXT_RESCAN" ]; then
+          NEXT_SCAN=$REFRESH_NOW; NEXT_RESCAN=$((REFRESH_NOW+1000))
+        fi
+        if [ "$ATTEMPTS" -lt 3 ]; then NEXT_VERIFY=$((REFRESH_NOW+10)); else NEXT_VERIFY=$((REFRESH_NOW+100)); fi
       fi
       runtime 1
     fi
-    # An empty/zero Binder reply alone NEVER earns a FOD acknowledgement.
+    # Only a matching observed mode + physical/render rate earns a token ACK.
     if [ "$APPLIED" = "$WANT" ]; then
       _ack="$REFRESH_BOOT $APPLIED $HBM_LEASE $SO_LEASE"
       if [ "$_ack" != "$ACK" ]; then
-        printf '%s\n' "$_ack" > "$D/.refresh_applied.tmp" && mv -f "$D/.refresh_applied.tmp" "$D/.refresh_applied"
-        ACK=$_ack
+        printf '%s\n' "$_ack" > "$D/.refresh_applied.tmp" && mv -f "$D/.refresh_applied.tmp" "$D/.refresh_applied" && ACK=$_ack
       fi
     fi
   fi
+  # Seed AFTER the early pin, so a fingerprint dumpsys cannot delay pre-arming.
+  if [ "$BOOT" = 1 ] && [ "$REFRESH_NOW" -ge "$NEXT_SEED" ]; then seed_session; fi
   TICK=$((TICK+1))
+  refresh_now
+  if [ $((REFRESH_NOW-LOOP_START)) -ge 100 ]; then recheck_gap iteration; fi
+  LAST_LOOP=$REFRESH_NOW
   sleep 0.05 || sleep 1
 done

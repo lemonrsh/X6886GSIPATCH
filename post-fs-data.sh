@@ -2,7 +2,8 @@
 MODDIR=${0%/*}
 # ---- FIRST THING: start the 144 Hz normal / 120 Hz FOD refresh controller ----
 # The single supervisor starts early, waits for SurfaceFlinger and restarts a
-# controller that exits. service.sh starts the same supervisor as a fallback.
+# controller that exits. It pre-arms 120 Hz once SF has modes (before boot_completed).
+# service.sh starts the same supervisor as a fallback; no bootloader changes.
 if [ -f "$MODDIR/refresh_supervisor.sh" ]; then
   if command -v setsid >/dev/null 2>&1; then ( setsid sh "$MODDIR/refresh_supervisor.sh" >/dev/null 2>&1 & )
   else ( sh "$MODDIR/refresh_supervisor.sh" >/dev/null 2>&1 & ); fi

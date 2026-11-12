@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh - Level 2 v1
-version=Level 2 v1
-versionCode=138
+name=X6886 GSI PATCH by lemonrsh - Level 2 v2
+version=Level 2 v2
+versionCode=139
 author=lemonrsh
-description=Level 2 v1: module CPU-overhead and stability optimizations only - native FOD event filtering, fewer redundant writes/process scans and clean refresh shutdown. Existing 0.4x animations, 144 Hz normal / 120 Hz FOD, reversible settings, 4266/1866 MHz screen-aware DRAM lock, HAL patch, HBM thermal/watchdog safety and download fixes are unchanged.
+description=Level 2 v2: wake/boot-safe 144 Hz normal / verified 120 Hz FOD. Pre-arms 120 Hz during sleep/early boot, rechecks wake and repeated overrides, continues bounded retries and reconciles live refresh votes. Retains 0.4x animations, 4266/1866 MHz screen-aware DRAM, HAL patch, HBM safety and download fixes.

@@ -1,23 +1,35 @@
-X6886 GSI PATCH by lemonrsh — Level 2 v1 (versionCode 138)
+X6886 GSI PATCH by lemonrsh — Level 2 v2 (versionCode 139)
 ====================================
 
-LEVEL 2 v1: lower module overhead and stability; no tuning/feature changes.
-Flash in Magisk and REBOOT. The existing module ID is retained for an in-place
-update, so do not install a second copy alongside the previous version.
+WAKE/BOOT-SAFE 144 Hz normal / verified 120 Hz FOD recovery.
+Flash in Magisk and REBOOT. Same module ID: updates the existing installation.
 
-* Native, flushed FOD input filtering on more toolsets; no raw coordinate/SYN
-  parsing in the shell when supported, and no added key-event buffering.
-* Builtin reads replace repeated cat processes; bridge parsing avoids per-line
-  subshells. Healthy HAL/SF watchdogs avoid repeated process-table scans.
-* Skip unchanged status/ownership-file writes, not live settings reconciliation
-  or actual display observations. Runtime snapshots are not heartbeat files.
-* Stop the refresh controller/listener on live disable/remove flags, including
-  when the supervisor is waiting for its launched child.
-* Keep 0.4x animations, 144/120 Hz policy, FOD/ACK/replay timings, 4266/1866 MHz
-  DRAM lock, HAL patches, HBM thermal/watchdog limits and all existing tuning.
+* Fix cached 120 Hz results surviving wake-time display resets and requests
+  stopping after three failures. Continue rate-limited retries, never a hard cap.
+* Pre-arm 120 Hz during early boot and sleep/AOD, as soon as SurfaceFlinger has
+  supported modes. Both Magisk hooks still launch one supervisor. Full power-off
+  and reboot rediscover mode IDs; old boot-scoped holds/ACKs are not reused.
+* Observe Android power + bridge logs, builtin panel edges, suspend-like gaps and
+  a 10 s framework fallback. Wake clears cached ACKs and briefly guards 120 Hz
+  for 1 s while SystemUI/HAL registers FOD. Active FOD keeps it at 120 Hz.
+* Return to 144 Hz after all holds end; 150 ms upshift settling avoids bouncing
+  between fingerprint attempts. No added downshift debounce. The 50/100 ms lease/
+  press polls are software intervals, not physical transition guarantees.
+* Verify both rates periodically and reconcile live min/peak settings (5 s at
+  120 Hz, 15 s at 144 Hz). Repair external overrides and rediscover changed IDs.
+* Reseed current fingerprint operations on wake/restart and periodically without
+  allowing unknown dumps or stale snapshots to override fresh bridge events.
+* Bound Binder CLI stalls when timeout is available. Keep token-specific actual-
+  rate verification and the roughly 300 ms FAIL-OPEN HBM/SOFOD wait.
+* Keep 0.4x animations, 4266/1866 MHz DRAM, HAL patch, HBM thermal/watchdog safety,
+  reversible settings, download/performance tuning and Level 2 v1 optimizations.
 
-86 host tests across bash/dash/mksh/BusyBox ash; not a measured phone CPU saving
-or hardware FOD guarantee. Keep the previous ZIP for rollback. See CHANGELOG.txt.
+108 host tests on bash/dash/mksh/BusyBox ash, including simulated cold boots,
+missed wake logs and repeated overrides. Not on-device validation or a guarantee
+of zero flicker/biometric errors. Hardware/ROM/thermal limits still apply. Test
+repeated screen-off FOD, app prompts, enrolment and a full power-off/reboot. Keep
+the previous ZIP for rollback. No module can run while the phone is powered off
+or before Android/Magisk/SurfaceFlinger exists; boot firmware is not modified.
 
 Previous v14.4.1 hotfix (retained):
 If FOD stayed at 144 Hz, this update includes the v14.4.1 controller recovery fix.
