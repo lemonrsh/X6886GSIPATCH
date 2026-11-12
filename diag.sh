@@ -17,7 +17,12 @@ refresh_report() {
   done
   echo "== last controller observation"; cat "$D/.refresh_runtime" 2>/dev/null
   echo "== verified ACK (boot / Hz / HBM token / SOFOD token)"; cat "$D/.refresh_applied" 2>/dev/null
-  echo "== session / epoch"; cat "$D/.refresh_session" "$D/.refresh_epoch" 2>/dev/null
+  echo "== session (boot / expiry_cs / auth / touch / epoch / sequence / event / up_cs)"
+  cat "$D/.refresh_session" 2>/dev/null
+  echo "== power (boot / up_cs / state / epoch / sequence) / epoch"
+  cat "$D/.refresh_power" "$D/.refresh_epoch" 2>/dev/null
+  echo "== helper holds (boot / expiry_cs / token)"
+  cat "$D/.refresh_hold.hbm" "$D/.refresh_hold.sofod" 2>/dev/null
   echo "== fppress=$(getprop sys.phh.oplus.fppress) user=$(cmd activity get-current-user 2>/dev/null)"
   echo "== min=$(settings --user current get system min_refresh_rate 2>/dev/null) peak=$(settings --user current get system peak_refresh_rate 2>/dev/null)"
   echo "== last SurfaceFlinger request/reply"; cat "$D/refresh_last_reply.txt" 2>/dev/null

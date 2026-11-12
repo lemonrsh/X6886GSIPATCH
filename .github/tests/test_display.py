@@ -295,7 +295,7 @@ if module_setting_value '1.2.3'; then exit 1; fi
 class FakeAndroid:
     """A complete script instance with file-backed Android command stubs."""
 
-    def __init__(self, shell, display_modes=None, boot="1", pin_ok=True, seed=False, reply="zero"):
+    def __init__(self, shell, display_modes=None, boot="1", pin_ok=True, seed=False, reply="zero", panel=None, power="Unknown"):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.tmp.name)
         self.mod = self.root / "mod"; self.mod.mkdir()
@@ -306,11 +306,16 @@ class FakeAndroid:
         for name in ["refresh.sh", "refresh_supervisor.sh", "refresh_fod.sh", "settings_state.sh", "animations.sh", "lib.sh", "uninstall.sh", "diag.sh", "module.prop"]:
             text = read(name).replace("/data/adb/fod", str(self.data))
             text = text.replace("/sys/kernel/tran_display/lcm_hbm_state", str(self.root / "hbm"))
+            text = text.replace("/sys/class/drm/card0-DSI-1/dpms", str(self.root / "panel"))
+            text = text.replace("/proc/sys/kernel/random/boot_id", str(self.root / "boot_id"))
             (self.mod / name).write_text(text)
         for name, value in {"press": "0", "boot": boot, "user": "0", "pin_ok": "1" if pin_ok else "0", "reply": reply,
                             "modes": modes() if display_modes is None else display_modes,
-                            "fingerprint": "Current operation: FingerprintAuthenticationClient" if seed else "Current operation: null"}.items():
+                            "fingerprint": "Current operation: FingerprintAuthenticationClient" if seed else "Current operation: null",
+                            "boot_id": "boot-one", "power": f"mWakefulness={power}"}.items():
             self.put(name, value)
+        if panel is not None:
+            self.put("panel", panel)
         self.events = self.root / "events"
         os.mkfifo(self.events)
         self.event_fd = os.open(self.events, os.O_RDWR | os.O_NONBLOCK)
@@ -345,11 +350,14 @@ case "$1" in
     ;;
 
   fingerprint) cat "$TESTROOT/fingerprint" ;;
+  power) cat "$TESTROOT/power" ;;
 esac
 ''',
             "cmd": '#!/bin/sh\ncat "$TESTROOT/user"\n',
             "renice": '#!/bin/sh\nexit 0\n',
             "service": '''#!/bin/sh
+printf '%s\\n' "$5" >> "$TESTROOT/requests"
+[ ! -f "$TESTROOT/pin_hang" ] || exec sleep 30
 if [ "$(cat "$TESTROOT/pin_ok")" = 1 ]; then
   printf '%s\\n' "$5" > "$TESTROOT/mode"
   printf '%s\\n' "$5" >> "$TESTROOT/calls"
@@ -423,6 +431,9 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
 
     def mode(self, value):
         self.wait(lambda: self.contents("mode") == str(value))
+
+    def verified(self, hz, limit=3):
+        self.wait(lambda: self.contents("fod/.refresh_applied").split()[1:2] == [str(hz)], limit=limit)
 
     def event(self, text):
         os.write(self.event_fd, ("I/oplus_udfps_transsion: " + text + "\n").encode())
@@ -506,7 +517,8 @@ class DisplayDaemonTests(unittest.TestCase):
     def test_early_fod_is_not_overwritten_by_boot_completed_settings(self):
         for shell in SHELLS:
             with self.subTest(shell=shell), FakeAndroid(shell, boot="0") as dev:
-                dev.mode(3)
+                dev.mode(2)  # pre-arm 120 as soon as SF is ready, before boot_completed
+                self.assertNotIn("3", dev.contents("requests").splitlines())
                 result = dev.client('refresh_fod_begin hbm; echo "$REFRESH_FOD_TOKEN"')
                 token = result.stdout.strip(); dev.mode(2)
                 dev.put("boot", "1")
@@ -547,9 +559,11 @@ class DisplayDaemonTests(unittest.TestCase):
                 self.assertFalse((dev.data / ".refresh_applied").exists())
                 self.assertNotIn("Hz verified", dev.contents("fod/refresh.log"))
                 dev.put("press", "1"); dev.setting("peak_refresh_rate", "120")
-                dev.wait(lambda: "120 Hz NOT verified" in dev.contents("fod/refresh.log"))
+                dev.wait(lambda: any("120 Hz NOT verified" in line and "trigger=press" in line
+                                     for line in dev.contents("fod/refresh.log").splitlines()))
+                warnings = dev.contents("fod/refresh.log").count("120 Hz NOT verified")
                 time.sleep(0.3)
-                self.assertEqual(dev.contents("fod/refresh.log").count("120 Hz NOT verified"), 1)
+                self.assertEqual(dev.contents("fod/refresh.log").count("120 Hz NOT verified"), warnings)
                 self.assertFalse((dev.data / ".refresh_applied").exists())
 
     def test_foreground_user_switch_gets_own_votes_and_originals(self):
@@ -563,7 +577,8 @@ class DisplayDaemonTests(unittest.TestCase):
     def test_starting_during_an_existing_prompt_seeds_120(self):
         for shell in SHELLS:
             with self.subTest(shell=shell), FakeAndroid(shell, seed=True) as dev:
-                dev.mode(2)
+                dev.mode(2); dev.setting("min_refresh_rate", "120")
+                dev.put("fingerprint", "Current operation: null")
                 dev.event("ICancellationSignal::cancel invoked"); dev.mode(3)
 
     def test_three_global_animation_scales_and_uninstall_restore(self):
@@ -752,7 +767,7 @@ class DisplayDaemonTests(unittest.TestCase):
                 result = subprocess.run([shell, str(dev.mod / "diag.sh"), "refresh"], env=dev.env,
                                         text=True, capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                for text in ["version=Level 2 v1", "refresh: running=yes", "refresh_supervisor: running=yes",
+                for text in ["version=Level 2 v2", "refresh: running=yes", "refresh_supervisor: running=yes",
                              "verified ACK", "physical_hz=144", "Parcel(NULL)", "activeMode={id=3"]:
                     self.assertIn(text, result.stdout)
                 self.assertNotIn("== top threads", result.stdout)
@@ -781,7 +796,7 @@ class DisplayDaemonTests(unittest.TestCase):
         self.assertIn('if [ "$1" = refresh ]', read("diag.sh"))
         self.assertNotIn("TARGET_HZ=120", read("customize.sh"))
         self.assertNotIn("fixed 120 Hz", read("diag.sh"))
-        self.assertIn("version=Level 2 v1\nversionCode=138", read("module.prop"))
+        self.assertIn("version=Level 2 v2\nversionCode=139", read("module.prop"))
         self.assertIn("id=X6886_GSI_PATCH_level_1_by_lemonrsh\n", read("module.prop"))
         self.assertIn("module_settings_restore", read("uninstall.sh"))
 

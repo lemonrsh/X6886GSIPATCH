@@ -1,3 +1,50 @@
+Level 2 v2 (2026-11-12) - wake/boot-safe 144/120 Hz recovery
+* Fix a cached verified target surviving panel wake/policy overrides. Previously a
+  still-120 target could retain an old ACK; mode requests also stopped after three
+  attempts until the 120 s rescan, and verified normal 144 was not observed again.
+* Pre-arm 120 Hz during early boot, sleep and AOD. The existing post-fs-data/late
+  service supervisor starts automatically on every boot; apply as soon as SF has
+  supported modes, without waiting for sys.boot_completed. Re-discover IDs after
+  every controller start/SF identity change; never persist guessed IDs across boots.
+  This is not execution before Android/Magisk/SF, and cannot run while powered off.
+* Follow PowerManagerService/PowerGroup and bundled bridge sleep/wake logs. Reuse
+  the controller loop for builtin panel reads; a 10 s bounded dumpsys power fallback
+  reconciles missed edges. Clear ACK/physical/framework caches on wake even when
+  target remains 120. Guard wake at 120 for 1 s while SystemUI/HAL registers FOD.
+* Replace loop-count deadlines with /proc/uptime centiseconds (includes suspend).
+  Detect a >=1 s gap between loops or inside an iteration and recheck display/auth.
+  A long/failed IPC does not reset an already-pending request's bounded backoff.
+  Debounce only the upshift by 150 ms, so terminal/release edges do not bounce back
+  to 144 between touches. Downshifts remain immediate, with 50/100 ms input polls.
+* Remove the permanent three-request ceiling. Retry rapidly first, then back off
+  up to 5 s on persistent failures. Reset recovery after success/new holds/wake;
+  periodically observe both 120 Hz (1 s) and normal 144 Hz (5 s). A real mismatch
+  invalidates the ACK, re-pins the mode and repairs live framework votes. Re-scan
+  mode tables after failures; retain known IDs only on a transient empty dump from
+  the same SF process, not after process replacement or a valid no-120 mode table.
+* Reconcile live min/peak settings every 5 s at 120 / 15 s at 144 and on recovery,
+  instead of trusting FRAMEWORK_HZ forever. Keep safe write order, original-value
+  snapshots, foreground-user handling and uninstall restoration. Bound service,
+  settings and current-user Binder CLI calls with a 1 s timeout where supported;
+  keep native dumpsys timeouts. No extra timeout wrapper on hot getprop polling.
+* Reseed current fingerprint operations after boot/wake/restarts and periodically.
+  Do not mistake unavailable dumps for an idle client. Snapshot/event generations
+  and a recent-event guard prevent stale dumps from resurrecting a cancelled auth
+  or overriding a newer bridge event. Handle the earliest screen-off sensor press.
+* Preserve observed mode/physical/render validation before per-token HBM/SOFOD ACKs,
+  the roughly 300 ms fail-open helper wait, 8 s helper leases, HBM MAX_S/thermal
+  protection, HAL patches, 0.4x animations, DRAM policy and all other tuning.
+* Extend plain-text diag.sh refresh with power/lease state; runtime adds screen,
+  trigger and bounded retry phase. Keep idle snapshot-write deduplication.
+* Add 22 host regressions (108 total) on bash/dash/mksh/BusyBox ash: repeated physical
+  overrides, no target change, missed auth/power edges, live vote overrides, retry
+  exhaustion, new mode IDs without SF restart, delayed early-boot mode discovery,
+  simulated suspend/cold boot and stalled mode CLI. No real phone was available:
+  software intervals are not panel latency/FPS or zero-flicker/FOD guarantees.
+* Brand as Level 2 v2 / versionCode 139, keeping the module ID for in-place updates.
+  Flash in Magisk and reboot; test repeated screen-off FOD and full power-off/reboot.
+  Keep the previous ZIP for rollback. Hardware/ROM/thermal limits still apply.
+
 Level 2 v1 (2026-11-12) - module CPU overhead and stability only
 * Preserve every existing tuning value and feature: 0.4x animations, 144 Hz normal /
   120 Hz FOD, physical-state/token verification, FOD waits/replay, DRAM 4266/1866 MHz,

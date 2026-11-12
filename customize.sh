@@ -68,7 +68,7 @@ fi
 # v14.4: migrate the old always-120 controller. Mode IDs are resolved fresh from
 # SurfaceFlinger; never reuse a cached ID across a reboot/HAL/ROM update.
 cat > "$DATA/fod/refresh.conf" <<'CONF'
-# 144 Hz normally / 120 Hz during FOD (same-resolution, same-group modes only).
+# 144 Hz interactive / 120 Hz FOD, sleep and wake guard (compatible modes only).
 RECONCILE_S=120
 SETTINGS_RATE=1
 CONF
@@ -142,9 +142,10 @@ ui_print "- Configs in /data/adb/fod: hbm.conf refresh.conf gsi.conf dlfix.conf 
 ui_print "- v10.5: SOT watcher removed; Settings battery history/database are untouched."
 ui_print "- Battery sysfs scaling remains disabled."
 ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log dram.log sofod_touch.log gsi.log"
-ui_print "- Level 2 v1: module overhead/stability only; existing tuning is unchanged."
+ui_print "- Level 2 v2: wake/boot-safe refresh recovery; other tuning is retained."
 ui_print "- Android animation scales = 0.4x (window / transition / animator)."
-ui_print "- Supervised 144 Hz normal / verified 120 Hz fingerprint, enrolment and SOFOD."
+ui_print "- 144 Hz normal / verified 120 Hz FOD; 120 Hz pre-armed during sleep/early boot."
+ui_print "- Wake guard, continued retries and live-vote recovery; compatible modes only."
 ui_print "- Uses compatible display modes; falls back to 120 Hz if 144 Hz is unavailable."
 ui_print "- DRAM lock - 4266 MHz screen on / 1866 MHz screen off. dram.conf"
 ui_print "- Reboot to apply."

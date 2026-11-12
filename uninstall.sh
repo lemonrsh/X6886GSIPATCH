@@ -58,5 +58,6 @@ fi
 # Restore display HBM only; never touch battery sysfs nodes. Magisk's removal
 # reboot clears the SurfaceFlinger mode pin and all other module processes.
 { echo 0 > /sys/kernel/tran_display/lcm_hbm_state; } 2>/dev/null
-rm -f "$D/.refresh_ready" "$D/.refresh_applied" "$D/.refresh_hold.hbm" "$D/.refresh_hold.sofod"
+rm -f "$D/.refresh_ready" "$D/.refresh_applied" "$D/.refresh_hold.hbm" "$D/.refresh_hold.sofod" \
+  "$D/.refresh_power" "$D/.refresh_session" "$D/.refresh_epoch" "$D/.refresh_stream_reset"
 exit 0
