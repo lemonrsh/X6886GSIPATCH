@@ -84,7 +84,7 @@ jobs:
           SAFE_VERSION="$(printf '%s' "${VERSION#v}" | tr -c 'A-Za-z0-9._-' '-')"
           TAG="v${SAFE_VERSION}-${SHORT_SHA}"
           ZIP_NAME="X6886GSIPATCH-${TAG}.zip"
-          TITLE='x6886 aosp gsi patch'
+          TITLE="$MODULE_NAME"
           {
             printf 'version=%s\n' "$VERSION"
             printf 'version_code=%s\n' "$VERSION_CODE"
@@ -186,7 +186,7 @@ jobs:
           # Include the current changelog entry, including hardware/test limits.
           {
             printf '\n## Changes\n\n'
-            awk 'NR == 1 { print "**" $0 "**"; next } /^v[0-9]/ { exit } { print }' CHANGELOG.txt
+            awk 'NR == 1 { print "**" $0 "**"; next } /^(v[0-9]|Level [0-9]+ v[0-9]+)/ { exit } { print }' CHANGELOG.txt
           } >> "$NOTES"
 
           # A rerun for the same commit refreshes its existing release instead

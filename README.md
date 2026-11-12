@@ -1,6 +1,44 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
+## Level 2 v1: module CPU overhead and stability only
+
+This update optimizes **the module's own background work**; it does not change
+phone tuning or remove features. **Flash the ZIP in Magisk and reboot.** The
+version code is **138**. The module ID deliberately remains
+`X6886_GSI_PATCH_level_1_by_lemonrsh` so this is an in-place update, not a second
+module fighting the old one.
+
+- Native, flushed FOD filtering also works when Android's grep lacks
+  `--line-buffered`: prefer Magisk/PATH BusyBox awk, then interactive awk.
+  Coordinate/SYN traffic stays out of the shell on supported toolsets; unsupported
+  toolsets and `FAST_FILTER=0` retain the original fallback. Input buffering is
+  explicitly accounted for, not just output flushing.
+- Builtin file reads replace repeated `cat` processes for touch-device discovery,
+  panel state, battery temperature and HBM tokens. Bridge-event parsing no longer
+  forks a subshell for each log line.
+- Unchanged runtime snapshots and settings ownership markers are not rewritten.
+  Live settings are still checked/reconciled; actual display observations and
+  changed state still update diagnostics. `.refresh_runtime` records the last
+  state/observation, **not a per-second heartbeat**.
+- HAL/SF watchdogs check cached PID/start times with builtin reads and only scan
+  for replacements when needed. PID reuse and unavailable `/proc` identities are
+  handled; the existing 15/30-second watchdog cadence is unchanged.
+- The refresh controller honours live disable/remove flags during its existing
+  periodic check, even when the supervisor is waiting for it to exit.
+
+**Unchanged:** 0.4× animation scales; 144 Hz normal / 120 Hz fingerprint; all FOD
+lease/ACK checks, waits and replay timings; 4266/1866 MHz screen-aware DRAM lock;
+HBM thermal/timeout protection; HAL patches; CPU/IO/download tuning and settings
+restoration. No extra CPU governor or thermal tweak is added.
+
+**Validation:** 86 host regressions across bash, dash, Android-source mksh and
+BusyBox ash, including open-pipe input-latency checks and counted redundant
+writes/scans. No phone CPU profile was supplied, so there is **no measured CPU
+reduction percentage or hardware guarantee**. Test idle/scrolling and FOD after
+reboot; keep the previous release ZIP for rollback. Plain-text diagnostics remain
+available via `diag.sh` / `diag.sh refresh`; no archive upload is required.
+
 ## v14.4.1 hotfix: FOD staying at 144 Hz
 
 The device report confirmed a valid pair (**120 Hz = mode 0**, **144 Hz = mode 1**),
@@ -134,10 +172,11 @@ It checks the module layout, packages the tracked module files into a flashable
 ZIP (with `module.prop` and `META-INF` at the ZIP root), and publishes a GitHub
 Release. GitHub configuration and untracked build artifacts are excluded.
 
-- Release titles are `x6886 aosp gsi patch`, independently of the module's
-  internal name. The version and commit details remain in the release notes.
+- Release titles use the module's `name` from `module.prop`, including the
+  **Level 2 v1** branding. Version and commit details remain in the release notes.
 - Release tags combine the `module.prop` version and commit SHA, for example
-  `v11.2.1-39139a3`, so commits with the same module version get separate releases.
+  `vLevel-2-v1-<short-sha>` (spaces in the version are replaced with hyphens), so
+  commits with the same module version get separate releases.
 - Several commits in one push produce one release for the pushed HEAD commit.
 - Rerunning the workflow for the same commit replaces that release's ZIP instead
   of creating a duplicate.

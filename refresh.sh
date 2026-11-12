@@ -91,14 +91,16 @@ refresh_reply() {   # classification for diagnostics ONLY; even Parcel(NULL) may
     *) echo rejected ;;
   esac
 }
-refresh_event() {   # only events emitted by the bundled Transsion bridge
+refresh_event_parse() {   # only events emitted by the bundled Transsion bridge
+  REFRESH_EVENT=""
   case "$1" in
-    *"ISession::authenticate called"*|*"ISession::enroll called"*|*"ISession::detectInteraction called"*|*"onUiReady"*|*"auto-starting authenticate for SOFOD"*) echo session_on ;;
-    *"ICancellationSignal::cancel invoked"*|*"ISession::close called"*|*"Authentication SUCCEEDED"*|*"Enrollment completed successfully"*) echo session_off ;;
-    *"onPointerDown"*|*"display on, finger still held at ("*) echo touch_on ;;
-    *"onPointerUp"*|*"onPointerCancel"*|*"Touch release (BTN_TOUCH 0)"*|*"Tracking ID lifted"*|*"FOD touch timed out"*) echo touch_off ;;
+    *"ISession::authenticate called"*|*"ISession::enroll called"*|*"ISession::detectInteraction called"*|*"onUiReady"*|*"auto-starting authenticate for SOFOD"*) REFRESH_EVENT=session_on ;;
+    *"ICancellationSignal::cancel invoked"*|*"ISession::close called"*|*"Authentication SUCCEEDED"*|*"Enrollment completed successfully"*) REFRESH_EVENT=session_off ;;
+    *"onPointerDown"*|*"display on, finger still held at ("*) REFRESH_EVENT=touch_on ;;
+    *"onPointerUp"*|*"onPointerCancel"*|*"Touch release (BTN_TOUCH 0)"*|*"Tracking ID lifted"*|*"FOD touch timed out"*) REFRESH_EVENT=touch_off ;;
   esac
 }
+refresh_event() { refresh_event_parse "$1"; printf '%s\n' "$REFRESH_EVENT"; }
 refresh_framework() {   # Hz, user; lower min before peak on downshift (reverse on upshift)
   if [ "$1" = 120 ]; then
     module_setting_set system "$2" min_refresh_rate "$1" &&
@@ -149,7 +151,7 @@ watch_events() {
         if [ "$_we_new" != "$_we_epoch" ]; then
           _we_session=0; _we_touch=0; _we_epoch=$_we_new
         fi
-        _we_event=$(refresh_event "$line")
+        refresh_event_parse "$line"; _we_event=$REFRESH_EVENT
         case "$_we_event" in
           session_on) _we_session=1 ;;
           session_off) _we_session=0; _we_touch=0 ;;
@@ -188,13 +190,20 @@ new_epoch() {
   rm -f "$SESSIONF"
   SEEDED=0
 }
+# --- runtime snapshot helper (host-tested in test_low_cpu.py) ---
+RUNTIME_KEY=""
 runtime() {
+  _runtime_key="$$ $WATCH_PID $SFPID ${WANT:--} ${APPLIED:--} ${SF_ID:--} ${SF_HZ:--} ${SF_RENDER:--} $REPLY"
+  # Keep the 1 s liveness checks, but do not rewrite an identical idle snapshot.
+  # Actual display observations pass 1 so their timestamp is still refreshed.
+  if [ "${1:-0}" != 1 ] && [ "$_runtime_key" = "$RUNTIME_KEY" ] && [ -f "$D/.refresh_runtime" ]; then return 0; fi
   refresh_now
   printf 'pid=%s watcher=%s sfpid=%s up_cs=%s target=%s verified=%s active_id=%s physical_hz=%s render_hz=%s reply=%s\n' \
     "$$" "$WATCH_PID" "$SFPID" "$REFRESH_NOW" "${WANT:--}" "${APPLIED:--}" \
     "${SF_ID:--}" "${SF_HZ:--}" "${SF_RENDER:--}" "$REPLY" > "$D/.refresh_runtime.tmp" &&
-    mv -f "$D/.refresh_runtime.tmp" "$D/.refresh_runtime"
+    mv -f "$D/.refresh_runtime.tmp" "$D/.refresh_runtime" && RUNTIME_KEY=$_runtime_key
 }
+# --- end runtime snapshot helper ---
 configure_modes() {
   BASE_ID=""; FP_ID=""
   _cm_modes=$(dumpsys -t 2 SurfaceFlinger --displays 2>/dev/null | refresh_modes)
@@ -246,6 +255,9 @@ while [ ! -f "$D/.ui_stopping" ]; do
     log "bridge log stream ended; reseeding fingerprint session"
   fi
   if [ "$TICK" -ge "$NEXT_CHECK" ]; then
+    # The supervisor can be blocked waiting for this child. Reuse this existing
+    # 1 s check to stop on live disable/remove flags, without another poller.
+    [ -d "$MODDIR" ] && [ ! -f "$MODDIR/disable" ] && [ ! -f "$MODDIR/remove" ] || break
     NEXT_CHECK=$((TICK+20))
     if [ -z "$SFPID" ] || [ ! -r "/proc/$SFPID/comm" ]; then
       SFPID=$(pidof surfaceflinger 2>/dev/null | cut -d' ' -f1)
@@ -339,7 +351,7 @@ while [ ! -f "$D/.ui_stopping" ]; do
         rm -f "$D/.refresh_applied"
         if [ "$ATTEMPTS" -lt 3 ]; then NEXT_VERIFY=$((TICK+2)); else NEXT_VERIFY=$((TICK+20)); fi
       fi
-      runtime
+      runtime 1
     fi
     # An empty/zero Binder reply alone NEVER earns a FOD acknowledgement.
     if [ "$APPLIED" = "$WANT" ]; then

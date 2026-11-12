@@ -33,6 +33,11 @@ module_setting_set() {   # namespace user key value (snapshot only on the first 
   if [ "$_mss_cur" != "$4" ]; then
     module_setting_cmd "$1" "$2" put "$3" "$4" >/dev/null || return 1
   fi
+  # The ownership marker is unchanged on normal reconciles. Keep the existing
+  # file instead of forking mv and rewriting it every minute for all three scales.
+  _mss_last=""
+  [ -r "$_mss_file.last" ] && read -r _mss_last < "$_mss_file.last"
+  [ "$_mss_last" = "$4" ] && return 0
   printf '%s\n' "$4" > "$_mss_file.last.tmp.$$" &&
     mv -f "$_mss_file.last.tmp.$$" "$_mss_file.last"
 }
