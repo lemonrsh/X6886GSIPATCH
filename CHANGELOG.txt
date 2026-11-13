@@ -1,3 +1,17 @@
+Level 2 v5 (2026-11-13) - volume-key refresh policy and Magisk Action status
+* Version Level 2 v5 / versionCode 142.
+* Add a Magisk Action button menu: Volume UP selects the existing 144 Hz normally /
+  120 Hz for FOD auto-switch policy; Volume DOWN selects fixed 120 Hz everywhere.
+  The choice is saved under /data/adb/fod/refresh_mode, survives upgrades, and is
+  picked up live by the controller without a reboot. Power cancels the menu.
+* Show module enabled state, refresh supervisor/controller liveness, the selected
+  policy and the controller's last physical/render-rate observation in the action
+  output. Process liveness is reported separately from display-rate verification.
+* Keep the default policy unchanged (auto-switch) and retain the existing FOD,
+  display-mode discovery, settings ownership, thermal and wake/recovery behavior.
+* Add host regressions for live mode changes and the Action button's volume-key
+  choices. Host mocks do not prove the physical panel can sustain either rate.
+
 Level 2 v4 (2026-11-13) - fast 144/120 Hz switching and one-touch screen-off FOD
 * Framework refresh votes (Android `settings` CLI, a Java process per call) now run in
   one background worker after the pin/ACK. Previously up to four sequential calls

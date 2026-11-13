@@ -1,7 +1,30 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## Level 2 v4: fast 144 Hz ↔ 120 Hz switching and one-touch screen-off FOD
+## Level 2 v5: volume-key refresh mode selector and module status
+
+**Flash the new ZIP in Magisk and reboot once.** Version code: **142**. The module ID
+is unchanged, so this updates the existing installation. After installation, open the
+module card in Magisk and tap **Action**:
+
+- **Volume Up:** 144 Hz normally, with automatic switching to 120 Hz for fingerprint
+  authentication/enrolment, screen-off FOD, sleep and wake protection.
+- **Volume Down:** fixed 120 Hz everywhere; the controller continues to verify and
+  repair the physical mode and Android min/peak refresh settings.
+- **Power:** cancel without changing the selection (where the input driver exposes it).
+
+The selection is saved in `/data/adb/fod/refresh_mode`, survives module upgrades and
+is applied live without rebooting. Auto-switch remains the default for existing installs.
+The Action output shows whether the refresh supervisor/controller processes are running,
+the selected policy and the last physical/render-rate observation. **WORKING** means
+both controller processes are alive; it is not a guarantee that every ROM/panel accepted
+the requested rate. Check the last observation for actual verification.
+
+The panel/ROM must expose a compatible 120 Hz mode. This cannot bypass display-driver
+or thermal limits, or make an FPS-capped app render at 120/144 FPS. Test FOD and both
+policies on-device; keep the previous release ZIP for rollback.
+
+## Previous: Level 2 v4 — fast 144 Hz ↔ 120 Hz switching and one-touch screen-off FOD
 
 **Flash the new ZIP in Magisk and reboot.** Version code: **141**. Same module ID, so
 it updates the existing installation.

@@ -1,7 +1,15 @@
-X6886 GSI PATCH by lemonrsh — Level 2 v4 (versionCode 141)
+X6886 GSI PATCH by lemonrsh — Level 2 v5 (versionCode 142)
 ====================================
 
-FAST 144/120 Hz SWITCHING + ONE-TOUCH SCREEN-OFF FOD.
+REFRESH MODE ACTION BUTTON + MODULE STATUS.
+Flash the ZIP in Magisk and reboot once. Open the module card and tap Action:
+Volume UP = 144 Hz normally / automatic 120 Hz for FOD; Volume DOWN = 120 Hz
+fixed everywhere; Power cancels where supported. The saved policy applies live
+and survives upgrades. Action output shows supervisor/controller liveness and the
+last physical/render-rate observation. WORKING means processes are alive, not that
+every panel accepted the requested mode. Host tests are not device validation.
+
+Previous Level 2 v4: FAST 144/120 Hz SWITCHING + ONE-TOUCH SCREEN-OFF FOD.
 Flash in Magisk and REBOOT. Same module ID: updates the existing installation.
 
 * Android settings votes run in a background worker after the pin/ACK, so they no

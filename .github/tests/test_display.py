@@ -75,6 +75,29 @@ class RefreshHelperTests(unittest.TestCase):
             result = run_shell(shell, HELPERS + "\nrefresh_active <<'MODES'\n" + text + "MODES\n")
             self.assertEqual(result.stdout.strip(), "1 144 144", result.stderr)
 
+    def test_refresh_mode_read_defaults_safely_and_accepts_only_known_values(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as td:
+                script = HELPERS + f"""
+set -eu
+D={td!r}; mkdir -p "$D"
+REFRESH_MODE=120
+rm -f "$D/refresh_mode"
+refresh_mode_read
+[ "$REFRESH_MODE" = switch ]
+printf '120\\n' > "$D/refresh_mode"
+refresh_mode_read
+[ "$REFRESH_MODE" = 120 ]
+printf 'switch\\n' > "$D/refresh_mode"
+refresh_mode_read
+[ "$REFRESH_MODE" = switch ]
+printf 'eval\\n' > "$D/refresh_mode"
+refresh_mode_read
+[ "$REFRESH_MODE" = switch ]
+"""
+                result = run_shell(shell, script)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_binder_reply_classification_does_not_imply_verification(self):
         cases = [("0", "Result: Parcel(NULL)", "empty"),
                  ("0", "Result: Parcel(    )", "empty"),
@@ -296,6 +319,52 @@ if module_setting_value '1.2.3'; then exit 1; fi
             self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class RefreshActionTests(unittest.TestCase):
+    def test_volume_keys_select_policy_and_action_output_reports_status(self):
+        cases = [
+            ("/dev/input/event0: EV_KEY KEY_VOLUMEUP DOWN", "switch"),
+            ("/dev/input/event0: EV_KEY KEY_VOLUMEDOWN DOWN", "120"),
+            ("/dev/input/event0: EV_KEY KEY_POWER DOWN", None),
+        ]
+        for shell in SHELLS:
+            for event, expected in cases:
+                with self.subTest(shell=shell, event=event), tempfile.TemporaryDirectory() as td:
+                    root = pathlib.Path(td)
+                    bindir = root / "bin"; bindir.mkdir()
+                    fod = root / "fod"; fod.mkdir()
+                    getevent = bindir / "getevent"
+                    getevent.write_text("""#!/bin/sh
+if [ "$1" = -lp ]; then
+  printf '%s\\n' 'add device 1: /dev/input/event0' '  KEY (0001): KEY_POWER KEY_VOLUMEUP KEY_VOLUMEDOWN'
+else
+  printf '%s\\n' "$TEST_EVENT"
+fi
+""")
+                    getevent.chmod(0o755)
+                    id_command = bindir / "id"
+                    id_command.write_text("#!/bin/sh\necho 0\n")
+                    id_command.chmod(0o755)
+                    sleep = bindir / "sleep"
+                    sleep.write_text("#!/bin/sh\nexit 0\n")
+                    sleep.chmod(0o755)
+                    env = dict(os.environ, FODDATA=td, TESTROOT=td, TEST_EVENT=event,
+                               PATH=f"{bindir}:{os.environ['PATH']}")
+                    result = subprocess.run([shell, str(REPO / "action.sh")], env=env,
+                                            text=True, stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("Volume UP", result.stdout)
+                    self.assertIn("Volume DOWN", result.stdout)
+                    self.assertIn("Module status: NOT WORKING", result.stdout)
+                    mode_file = fod / "refresh_mode"
+                    if expected is None:
+                        self.assertFalse(mode_file.exists())
+                        self.assertIn("Cancelled", result.stdout)
+                    else:
+                        self.assertEqual(mode_file.read_text().strip(), expected)
+                        self.assertIn("Mode saved", result.stdout)
+
+
 class FakeAndroid:
     """A complete script instance with file-backed Android command stubs."""
 
@@ -471,6 +540,17 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
 
 
 class DisplayDaemonTests(unittest.TestCase):
+    def test_refresh_policy_switches_live_between_auto_and_fixed_120(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell) as dev:
+                dev.mode(3); dev.verified(144)
+                dev.put("fod/refresh_mode", "120")
+                dev.mode(2); dev.verified(120)
+                self.assertIn("policy=120", dev.contents("fod/.refresh_runtime"))
+                dev.put("fod/refresh_mode", "switch")
+                dev.mode(3); dev.verified(144)
+                self.assertIn("policy=switch", dev.contents("fod/.refresh_runtime"))
+
     def test_property_fallback_is_fast_and_idle_does_not_spam_binder(self):
         for shell in SHELLS:
             with self.subTest(shell=shell), FakeAndroid(shell) as dev:
@@ -771,7 +851,7 @@ class DisplayDaemonTests(unittest.TestCase):
                 result = subprocess.run([shell, str(dev.mod / "diag.sh"), "refresh"], env=dev.env,
                                         text=True, capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                for text in ["version=Level 2 v4", "refresh: running=yes", "refresh_supervisor: running=yes",
+                for text in ["version=Level 2 v5", "refresh: running=yes", "refresh_supervisor: running=yes",
                              "verified ACK", "physical_hz=144", "Parcel(NULL)", "activeMode={id=3"]:
                     self.assertIn(text, result.stdout)
                 self.assertNotIn("== top threads", result.stdout)
@@ -800,7 +880,10 @@ class DisplayDaemonTests(unittest.TestCase):
         self.assertIn('if [ "$1" = refresh ]', read("diag.sh"))
         self.assertNotIn("TARGET_HZ=120", read("customize.sh"))
         self.assertNotIn("fixed 120 Hz", read("diag.sh"))
-        self.assertIn("version=Level 2 v4\nversionCode=141", read("module.prop"))
+        self.assertIn("version=Level 2 v5\nversionCode=142", read("module.prop"))
+        self.assertIn("refresh_mode_read", read("refresh.sh"))
+        self.assertIn("action.sh", read(".github/workflows/release.yml"))
+        self.assertIn("refresh_mode", read("customize.sh"))
         self.assertIn("id=X6886_GSI_PATCH_level_1_by_lemonrsh\n", read("module.prop"))
         self.assertIn("module_settings_restore", read("uninstall.sh"))
 
