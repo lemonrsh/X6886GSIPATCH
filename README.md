@@ -3,6 +3,16 @@ A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x688
 
 ## Level 2 v3: screenshot-matched PHH and Android defaults
 
+### Full-charge screen-on-time baseline (experimental)
+
+`sot_reset.sh` waits for battery capacity `100` and status `Full`, then requests one
+`dumpsys batterystats --reset` per full-charge event. It re-arms after the device
+leaves Full and does not loop-reset while the phone remains charged. This resets
+Android BatteryStats history (not just the SOT counter), so other battery-usage
+history may also clear. It is enabled by default; set `SOT_RESET=0` in
+`/data/adb/fod/sot_reset.conf` to opt out. ROMs differ in how Settings displays SOT,
+so this needs on-device validation and cannot guarantee every GSI's display behavior.
+
 **Flash the new ZIP in Magisk and reboot.** Version code: **140**. The module
 ID remains unchanged for an in-place update. A finite boot task applies the pictured
 PHH preferences after the owner unlocks; refresh/FOD controllers start independently.

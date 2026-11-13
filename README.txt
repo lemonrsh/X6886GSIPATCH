@@ -74,10 +74,13 @@ guaranteed. Custom app animations/FPS limits may ignore system preferences.
 Original settings are saved once and restored on uninstall when still owned by
 the module. The removal reboot clears the display pin. See README.md for details.
 
-This release removes the non-working screen-on-time (SOT) watcher completely.
-It does NOT calculate, reset, repair, or modify Android Settings battery history.
-It does NOT delete battery-usage-db files or change UsageStats permissions.
-The Android Settings SOT issue is separate and remains unresolved by this module.
+SOT / battery usage: sot_reset.sh waits for battery capacity=100 and status=Full,
+then runs `dumpsys batterystats --reset` once for that full-charge event. It re-arms
+only after leaving Full, so it does not repeatedly reset while left plugged in. This
+resets Android BatteryStats history and can clear other battery-usage details; it
+does not modify battery sysfs, delete databases, or change UsageStats permissions.
+The behavior is enabled by default and can be disabled with SOT_RESET=0 in
+/data/adb/fod/sot_reset.conf. The exact Settings SOT display is ROM-dependent.
 Double-tap-to-wake (dt2w.sh / dt2w.conf) and the GPU governor (gpufix.sh / gpumod)
 have also been removed from this module; GPU DVFS will live in a separate module
 project. Screen-off FOD (fod_service.sh / sofod_touch.sh) remains active.
@@ -95,9 +98,10 @@ Preserved components (carried forward from v10.4):
 * Existing UI overlays
 
 Safety: battery sysfs scaling remains disabled (CAP_FIX=0). No writes or bind
-mounts are made to charge_counter, charge_full, or charge_full_design. No
-Batterystats reset, Health HAL restart, SELinux weakening, or Settings database
-rebuild is performed. Native battery reporting is left alone.
+mounts are made to charge_counter, charge_full, or charge_full_design. The only
+BatteryStats change is the opt-out full-charge reset described above; there is no
+Health HAL restart, SELinux weakening, or Settings database rebuild. Native battery
+reporting is left alone.
 
 Install: flash in Magisk and reboot. The installer disables the listed older
 standalone modules to avoid duplicate services. The module ID is unchanged, so

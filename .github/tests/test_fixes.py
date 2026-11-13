@@ -280,6 +280,24 @@ echo $$ > {str(self.root / 'acquired_pid')!r}
                 self.assertTrue((self.root / "acquired").exists())
 
 
+class SotResetTests(unittest.TestCase):
+    def test_full_charge_reset_is_wired_latched_and_opt_out_available(self):
+        script = read("sot_reset.sh")
+        service = read("service.sh")
+        customize = read("customize.sh")
+        uninstall = read("uninstall.sh")
+        self.assertIn("sot_reset.sh", service)
+        self.assertIn("sot_reset", uninstall)
+        self.assertIn('SOT_RESET=1', script)
+        self.assertIn('SOT_RESET=1', customize)
+        self.assertIn('if [ "$_sot_capacity" = 100 ] && [ "$_sot_status" = Full ]; then', script)
+        self.assertIn('dumpsys batterystats --reset', script)
+        self.assertIn('if [ ! -f "$STATE" ]; then', script)
+        self.assertIn('rm -f "$STATE"', script)
+        self.assertIn('SOT_RESET=0', customize)
+        self.assertNotIn('rm -rf', script)
+
+
 class DexoptIdleTests(unittest.TestCase):
     def setUp(self):
         self.block = marked_block(
