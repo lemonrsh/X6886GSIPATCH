@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# Magisk module Action button: select the live refresh-rate policy with volume keys.
+# Magisk module Action button: toggle or explicitly select the refresh policy.
 MODDIR=${0%/*}
 DATA=${FODDATA:-/data/adb}
 D=$DATA/fod
@@ -32,6 +32,24 @@ pid_is_running() {   # PID file, script basename; leaves checked PID in CHECKED_
   grep -F -q "$MODDIR/$2.sh" "/proc/$CHECKED_PID/cmdline" 2>/dev/null
 }
 
+read_runtime() {
+  RT_PID=-; RT_POLICY=-; RT_TARGET=-; RT_VERIFIED=-; RT_PHYSICAL=-; RT_RENDER=-
+  if [ -r "$D/.refresh_runtime" ]; then
+    _runtime_line=""
+    IFS= read -r _runtime_line < "$D/.refresh_runtime"
+    for _runtime_field in $_runtime_line; do
+      case "$_runtime_field" in
+        pid=*) RT_PID=${_runtime_field#pid=} ;;
+        policy=*) RT_POLICY=${_runtime_field#policy=} ;;
+        target=*) RT_TARGET=${_runtime_field#target=} ;;
+        verified=*) RT_VERIFIED=${_runtime_field#verified=} ;;
+        physical_hz=*) RT_PHYSICAL=${_runtime_field#physical_hz=} ;;
+        render_hz=*) RT_RENDER=${_runtime_field#render_hz=} ;;
+      esac
+    done
+  fi
+}
+
 print_status() {
   read_mode
   if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
@@ -57,22 +75,7 @@ print_status() {
     yes:no:yes) MODULE_STATUS='PARTIAL (controller runs, but its supervisor is missing)' ;;
     *) MODULE_STATUS='NOT WORKING (refresh supervisor/controller not running)' ;;
   esac
-
-  RT_PID=-; RT_POLICY=-; RT_TARGET=-; RT_VERIFIED=-; RT_PHYSICAL=-; RT_RENDER=-
-  if [ -r "$D/.refresh_runtime" ]; then
-    _runtime_line=""
-    IFS= read -r _runtime_line < "$D/.refresh_runtime"
-    for _runtime_field in $_runtime_line; do
-      case "$_runtime_field" in
-        pid=*) RT_PID=${_runtime_field#pid=} ;;
-        policy=*) RT_POLICY=${_runtime_field#policy=} ;;
-        target=*) RT_TARGET=${_runtime_field#target=} ;;
-        verified=*) RT_VERIFIED=${_runtime_field#verified=} ;;
-        physical_hz=*) RT_PHYSICAL=${_runtime_field#physical_hz=} ;;
-        render_hz=*) RT_RENDER=${_runtime_field#render_hz=} ;;
-      esac
-    done
-  fi
+  read_runtime
 
   say ""
   say "--- X6886 GSI PATCH status ---"
@@ -103,104 +106,74 @@ write_mode() {
   fi
 }
 
-signal_controller() {
-  pid_is_running "$D/.refresh.pid" refresh || return 1
-  kill -USR1 "$CHECKED_PID" 2>/dev/null
+is_verified_snapshot() {
+  case "$RT_TARGET" in 120|144) ;; *) return 1 ;; esac
+  [ "$RT_VERIFIED" = "$RT_TARGET" ] && [ "$RT_PHYSICAL" = "$RT_TARGET" ] &&
+    { [ "$RT_RENDER" = - ] || [ "$RT_RENDER" = "$RT_TARGET" ]; }
 }
 
-find_key_devices() {
-  getevent -lp 2>/dev/null | awk '
-    /^add device [0-9]+:/ {
-      if (device != "" && (has_volume || has_power)) print device
-      device=$4; sub(/:$/, "", device)
-      has_volume=0; has_power=0
-      next
-    }
-    /KEY_VOLUMEUP|KEY_VOLUMEDOWN/ { has_volume=1 }
-    /KEY_POWER/ { has_power=1 }
-    END { if (device != "" && (has_volume || has_power)) print device }
-  '
-}
-
-next_input_event() {
-  if [ -n "$KEY_DEVICES" ]; then
-    # Android input device paths contain no spaces; pass only volume/power devices.
-    set -- $KEY_DEVICES
-    getevent -lc 1 "$@" 2>/dev/null
-  else
-    getevent -lc 1 2>/dev/null
-  fi
+wait_for_mode() {   # policy; up to four seconds for a fresh verified observation
+  _wait_count=0
+  while [ "$_wait_count" -lt 20 ]; do
+    if pid_is_running "$D/.refresh.pid" refresh; then
+      _wait_pid=$CHECKED_PID
+      read_runtime
+      if [ "$RT_PID" = "$_wait_pid" ] && [ "$RT_POLICY" = "$1" ] && is_verified_snapshot; then
+        return 0
+      fi
+    fi
+    sleep 0.2
+    _wait_count=$((_wait_count+1))
+  done
+  return 1
 }
 
 if [ ! -f "$MODDIR/module.prop" ]; then
-  say 'Cannot find this module installation.'
-  print_status
+  say 'ERROR: cannot find this module installation.'
   exit 1
 fi
-
-say 'X6886 GSI PATCH - refresh-rate mode'
-say 'Choose with the hardware volume keys:'
-say '  Volume UP   = 144 Hz <-> 120 Hz auto-switch (120 Hz for FOD)'
-say '  Volume DOWN = 120 Hz everywhere'
-say '  Power       = cancel (if exposed by the device input driver)'
-print_status
-
 if [ "$(id -u 2>/dev/null)" != 0 ]; then
-  say ''
   say 'ERROR: Magisk did not run this action as root; no setting was changed.'
-  exit 1
-fi
-if ! command -v getevent >/dev/null 2>&1; then
-  say ''
-  say 'ERROR: getevent is unavailable; use a Magisk action environment with Android input tools.'
-  exit 1
-fi
-
-KEY_DEVICES=$(find_key_devices)
-if [ -z "$KEY_DEVICES" ]; then
-  say ''
-  say 'Volume-key input device was not identified; listening for volume keys on available input devices.'
-fi
-say ''
-say 'Waiting for Volume UP, Volume DOWN, or Power to cancel...'
-CHOICE=""
-while [ -z "$CHOICE" ]; do
-  _event=$(next_input_event)
-  case "$_event" in
-    *KEY_VOLUMEUP*DOWN*|*KEY_VOLUMEUP*00000001*|*0001*0073*00000001*) CHOICE=switch ;;
-    *KEY_VOLUMEDOWN*DOWN*|*KEY_VOLUMEDOWN*00000001*|*0001*0072*00000001*) CHOICE=120 ;;
-    *KEY_POWER*DOWN*|*KEY_POWER*00000001*|*0001*0074*00000001*) CHOICE=cancel ;;
-    *) [ -n "$_event" ] || sleep 1 ;;
-  esac
-done
-
-if [ "$CHOICE" = cancel ]; then
-  say ''
-  say 'Cancelled; the refresh mode was not changed.'
   print_status
-  exit 0
+  exit 1
 fi
 
-if ! write_mode "$CHOICE"; then
-  say ''
+read_mode
+case "${1:-toggle}" in
+  toggle)
+    if [ "$CURRENT_MODE" = switch ]; then TARGET_MODE=120; else TARGET_MODE=switch; fi
+    ;;
+  switch|auto) TARGET_MODE=switch ;;
+  120|fixed|fixed120) TARGET_MODE=120 ;;
+  status) print_status; exit 0 ;;
+  *)
+    say 'Usage: action.sh [toggle|switch|120|status]'
+    print_status
+    exit 2
+    ;;
+esac
+
+if ! write_mode "$TARGET_MODE"; then
   say 'ERROR: could not save the refresh mode under /data/adb/fod.'
   print_status
   exit 1
 fi
 
-say ''
-if [ "$CHOICE" = switch ]; then
-  say 'Saved: 144 Hz normally, with automatic 120 Hz switching for FOD.'
-else
-  say 'Saved: 120 Hz everywhere.'
-fi
+read_mode
+say "Refresh policy changed to: $MODE_LABEL"
 if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
-  say 'The module is disabled/removing; this choice will apply when it is enabled again.'
-elif signal_controller; then
-  say 'Refresh controller notified; the new policy will apply live.'
+  say 'The module is disabled/removing; the saved policy will apply when enabled again.'
+elif pid_is_running "$D/.refresh.pid" refresh; then
+  kill -USR1 "$CHECKED_PID" 2>/dev/null || true
+  say 'Refresh controller notified; waiting for its display observation...'
+  if wait_for_mode "$TARGET_MODE"; then
+    read_runtime
+    say "APPLIED: policy=$RT_POLICY, target=$RT_TARGET Hz, verified=$RT_VERIFIED Hz, physical=$RT_PHYSICAL Hz, render=$RT_RENDER Hz."
+  else
+    say 'PENDING: policy was saved, but the controller has not verified the display mode yet.'
+    say 'Check the panel/ROM mode table and refresh.log if this persists.'
+  fi
 else
-  say 'Mode saved; it will apply when the refresh controller starts.'
+  say 'SAVED, NOT APPLIED: refresh controller is not running. Reboot or check module status.'
 fi
-# Give the controller a moment to publish its updated policy/observation.
-sleep 1
 print_status

@@ -1,3 +1,15 @@
+Level 2 v6 (2026-11-13) - reliable one-tap refresh mode toggle
+* Version Level 2 v6 / versionCode 143.
+* Replace the blocking volume-key Action prompt with a direct tap-to-toggle between
+  144 Hz/120 Hz auto-switch and fixed 120 Hz everywhere. Optional `action.sh switch`
+  and `action.sh 120` arguments explicitly select a policy; the Magisk button toggles.
+* Notify the refresh controller and wait briefly for a matching verified physical/
+  render-rate observation. Report APPLIED only on verification; otherwise report
+  PENDING or SAVED, NOT APPLIED, and show controller/module liveness.
+* Add an end-to-end host regression that runs the actual Action script against the
+  fake Android controller and verifies both live transitions. No panel hardware is
+  available to host tests.
+
 Level 2 v5 (2026-11-13) - volume-key refresh policy and Magisk Action status
 * Version Level 2 v5 / versionCode 142.
 * Add a Magisk Action button menu: Volume UP selects the existing 144 Hz normally /

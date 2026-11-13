@@ -320,49 +320,36 @@ if module_setting_value '1.2.3'; then exit 1; fi
 
 
 class RefreshActionTests(unittest.TestCase):
-    def test_volume_keys_select_policy_and_action_output_reports_status(self):
+    def test_action_tap_really_toggles_policy_and_explicit_modes_are_supported(self):
         cases = [
-            ("/dev/input/event0: EV_KEY KEY_VOLUMEUP DOWN", "switch"),
-            ("/dev/input/event0: EV_KEY KEY_VOLUMEDOWN DOWN", "120"),
-            ("/dev/input/event0: EV_KEY KEY_POWER DOWN", None),
+            (None, [], "120", True),
+            ("120", [], "switch", True),
+            ("switch", ["120"], "120", True),
+            ("120", ["switch"], "switch", True),
+            ("120", ["status"], "120", False),
         ]
         for shell in SHELLS:
-            for event, expected in cases:
-                with self.subTest(shell=shell, event=event), tempfile.TemporaryDirectory() as td:
+            for initial, args, expected, changed in cases:
+                with self.subTest(shell=shell, initial=initial, args=args), tempfile.TemporaryDirectory() as td:
                     root = pathlib.Path(td)
                     bindir = root / "bin"; bindir.mkdir()
                     fod = root / "fod"; fod.mkdir()
-                    getevent = bindir / "getevent"
-                    getevent.write_text("""#!/bin/sh
-if [ "$1" = -lp ]; then
-  printf '%s\\n' 'add device 1: /dev/input/event0' '  KEY (0001): KEY_POWER KEY_VOLUMEUP KEY_VOLUMEDOWN'
-else
-  printf '%s\\n' "$TEST_EVENT"
-fi
-""")
-                    getevent.chmod(0o755)
+                    if initial is not None:
+                        (fod / "refresh_mode").write_text(initial + "\n")
                     id_command = bindir / "id"
                     id_command.write_text("#!/bin/sh\necho 0\n")
                     id_command.chmod(0o755)
-                    sleep = bindir / "sleep"
-                    sleep.write_text("#!/bin/sh\nexit 0\n")
-                    sleep.chmod(0o755)
-                    env = dict(os.environ, FODDATA=td, TESTROOT=td, TEST_EVENT=event,
-                               PATH=f"{bindir}:{os.environ['PATH']}")
-                    result = subprocess.run([shell, str(REPO / "action.sh")], env=env,
+                    env = dict(os.environ, FODDATA=td, PATH=f"{bindir}:{os.environ['PATH']}")
+                    result = subprocess.run([shell, str(REPO / "action.sh"), *args], env=env,
                                             text=True, stdout=subprocess.PIPE,
                                             stderr=subprocess.PIPE, timeout=5)
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn("Volume UP", result.stdout)
-                    self.assertIn("Volume DOWN", result.stdout)
                     self.assertIn("Module status: NOT WORKING", result.stdout)
-                    mode_file = fod / "refresh_mode"
-                    if expected is None:
-                        self.assertFalse(mode_file.exists())
-                        self.assertIn("Cancelled", result.stdout)
+                    self.assertEqual((fod / "refresh_mode").read_text().strip(), expected)
+                    if changed:
+                        self.assertIn("Refresh policy changed to:", result.stdout)
                     else:
-                        self.assertEqual(mode_file.read_text().strip(), expected)
-                        self.assertIn("Mode saved", result.stdout)
+                        self.assertNotIn("Refresh policy changed to:", result.stdout)
 
 
 class FakeAndroid:
@@ -376,7 +363,7 @@ class FakeAndroid:
         self.bin = self.root / "bin"; self.bin.mkdir()
         self.settings = self.root / "settings"; self.settings.mkdir()
         self.shell = shell
-        for name in ["refresh.sh", "refresh_supervisor.sh", "refresh_fod.sh", "settings_state.sh", "animations.sh", "lib.sh", "uninstall.sh", "diag.sh", "module.prop"]:
+        for name in ["action.sh", "refresh.sh", "refresh_supervisor.sh", "refresh_fod.sh", "settings_state.sh", "animations.sh", "lib.sh", "uninstall.sh", "diag.sh", "module.prop"]:
             text = read(name).replace("/data/adb/fod", str(self.data))
             text = text.replace("/sys/kernel/tran_display/lcm_hbm_state", str(self.root / "hbm"))
             text = text.replace("/sys/class/drm/card0-DSI-1/dpms", str(self.root / "panel"))
@@ -540,6 +527,30 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
 
 
 class DisplayDaemonTests(unittest.TestCase):
+    def test_action_button_toggles_and_waits_for_real_display_verification(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell) as dev:
+                id_command = dev.bin / "id"
+                id_command.write_text("#!/bin/sh\necho 0\n")
+                id_command.chmod(0o755)
+                dev.mode(3); dev.verified(144)
+
+                first = subprocess.run([shell, str(dev.mod / "action.sh")], env=dev.env,
+                                        text=True, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, timeout=8)
+                self.assertEqual(first.returncode, 0, first.stderr)
+                self.assertIn("Refresh policy changed to: 120 Hz everywhere", first.stdout)
+                self.assertIn("APPLIED: policy=120, target=120 Hz, verified=120 Hz", first.stdout)
+                dev.mode(2); dev.verified(120)
+
+                second = subprocess.run([shell, str(dev.mod / "action.sh")], env=dev.env,
+                                        text=True, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, timeout=8)
+                self.assertEqual(second.returncode, 0, second.stderr)
+                self.assertIn("Refresh policy changed to: 144 Hz <-> 120 Hz auto-switch", second.stdout)
+                self.assertIn("APPLIED: policy=switch", second.stdout)
+                dev.mode(3); dev.verified(144)
+
     def test_refresh_policy_switches_live_between_auto_and_fixed_120(self):
         for shell in SHELLS:
             with self.subTest(shell=shell), FakeAndroid(shell) as dev:
@@ -851,7 +862,7 @@ class DisplayDaemonTests(unittest.TestCase):
                 result = subprocess.run([shell, str(dev.mod / "diag.sh"), "refresh"], env=dev.env,
                                         text=True, capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                for text in ["version=Level 2 v5", "refresh: running=yes", "refresh_supervisor: running=yes",
+                for text in ["version=Level 2 v6", "refresh: running=yes", "refresh_supervisor: running=yes",
                              "verified ACK", "physical_hz=144", "Parcel(NULL)", "activeMode={id=3"]:
                     self.assertIn(text, result.stdout)
                 self.assertNotIn("== top threads", result.stdout)
@@ -880,7 +891,9 @@ class DisplayDaemonTests(unittest.TestCase):
         self.assertIn('if [ "$1" = refresh ]', read("diag.sh"))
         self.assertNotIn("TARGET_HZ=120", read("customize.sh"))
         self.assertNotIn("fixed 120 Hz", read("diag.sh"))
-        self.assertIn("version=Level 2 v5\nversionCode=142", read("module.prop"))
+        self.assertIn("version=Level 2 v6\nversionCode=143", read("module.prop"))
+        self.assertIn("APPLIED:", read("action.sh"))
+        self.assertNotIn("getevent", read("action.sh"))
         self.assertIn("refresh_mode_read", read("refresh.sh"))
         self.assertIn("action.sh", read(".github/workflows/release.yml"))
         self.assertIn("refresh_mode", read("customize.sh"))
