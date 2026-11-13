@@ -1,3 +1,13 @@
+Level 2 v3.1 (2026-11-13) - restore Android CPU governor policy and reduce background work
+* Remove the forced, periodic CPU performance-governor loop. CPU governor policy is
+  left to Android/vendor power HALs by default; PERF_GOVERNOR=1 remains an explicit
+  one-time opt-in.
+* Reduce idle module overhead by removing recurring CPU-policy sysfs reads/writes.
+  Keep SurfaceFlinger restart handling, guarded background dexopt, and existing
+  display/FOD/thermal safety behavior unchanged.
+* Host regression tests cover the behavior; device-specific stability and thermals
+  still require testing on the target phone.
+
 Level 2 v3 (2026-11-12) - screenshot-matched PHH / Android defaults
 * Add the pictured PHH switches with fork-aware DEX-key detection and literal, typed
   SharedPreferences updates. Unsupported switches are skipped; never invoke old

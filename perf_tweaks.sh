@@ -4,7 +4,7 @@
 # which Magisk never executes, so it never ran. It now runs after boot (SurfaceFlinger does not exist earlier).
 # The props from that module (debug.sf.latch_unsignaled, dex2oat-threads, ...) are in system.prop and always applied.
 D=/data/adb/fod; CONF=$D/gsi.conf; LOG=$D/gsi.log
-PERF_GOVERNOR=1   # Always pin every CPU policy to performance (higher heat and battery drain)
+PERF_GOVERNOR=0   # Optional one-time performance-governor request; disabled by default
 SF_BOOST=1        # SurfaceFlinger -> top-app cpuset and nice -8 (re-applied if SurfaceFlinger restarts)
 READ_AHEAD_KB=256 # storage read-ahead (0 = leave default); helps app launch / big file reads
 VM_DIRTY=1        # v7: cap dirty page cache (64 MB background / 256 MB hard) so big downloads cannot cause long writeback stalls
@@ -13,22 +13,18 @@ MODDIR=${0%/*}
 [ -f "$MODDIR/lib.sh" ] && . "$MODDIR/lib.sh" && single_instance perf_tweaks
 mkdir -p $D
 [ -f $CONF ] && . $CONF
-# CPU performance mode is an intentional always-on module policy. Ignore older
-# user config values so upgrades from PERF_GOVERNOR=0 also take effect.
-PERF_GOVERNOR=1
 while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 2; done
 sleep 5
 : > $LOG
-apply_performance_governor() {
+if [ "$PERF_GOVERNOR" = 1 ]; then
+  # Opt-in only; apply once and leave ongoing governor policy to Android/vendor HAL.
   for p in /sys/devices/system/cpu/cpufreq/policy*; do
     [ -d "$p" ] || continue
-    [ "$(cat "$p/scaling_governor" 2>/dev/null)" = performance ] && continue
-    echo performance > "$p/scaling_governor" 2>/dev/null && echo "$(date +%T) $p -> performance" >> "$LOG" || echo "$(date +%T) $p: performance governor write failed" >> "$LOG"
+    echo performance > "$p/scaling_governor" 2>/dev/null && echo "$p -> performance" >> "$LOG" || echo "$p: write failed" >> "$LOG"
   done
-}
-# Reassert periodically because vendor power HALs may change governors after boot.
-apply_performance_governor
-( while true; do sleep 30; apply_performance_governor; done ) &
+else
+  echo "CPU governor left to Android/vendor policy" >> "$LOG"
+fi
 boost_sf() {
   SF=$(pidof surfaceflinger | cut -d' ' -f1)
   [ -n "$SF" ] || { echo "surfaceflinger pid not found" >> $LOG; return 1; }
