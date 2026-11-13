@@ -109,7 +109,7 @@ module fighting the old one.
 **Unchanged:** 0.4× animation scales; 144 Hz normal / 120 Hz fingerprint; all FOD
 lease/ACK checks, waits and replay timings; 4266/1866 MHz screen-aware DRAM lock;
 HBM thermal/timeout protection; HAL patches; CPU/IO/download tuning and settings
-restoration. No extra CPU governor or thermal tweak is added.
+restoration. CPU policies are continuously pinned to the performance governor (higher heat and battery drain); no thermal limit is changed.
 
 **Validation:** 86 host regressions across bash, dash, Android-source mksh and
 BusyBox ash, including open-pipe input-latency checks and counted redundant
