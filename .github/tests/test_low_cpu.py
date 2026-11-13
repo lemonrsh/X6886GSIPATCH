@@ -316,6 +316,16 @@ sleep() {{
 
 
 class RedundantWorkTests(unittest.TestCase):
+    def test_cpu_governor_is_not_forced_or_polled_by_default(self):
+        perf = read("perf_tweaks.sh")
+        config = read("customize.sh")
+        self.assertIn("PERF_GOVERNOR=0", perf)
+        self.assertIn("PERF_GOVERNOR=0", config)
+        self.assertIn('if [ "$PERF_GOVERNOR" = 1 ]; then', perf)
+        self.assertIn("CPU governor left to Android/vendor policy", perf)
+        self.assertNotIn("apply_performance_governor", perf)
+        self.assertNotIn("sleep 30; apply_performance_governor", perf)
+
     def test_runtime_deduplicates_idle_writes_but_preserves_observations_changes_and_retries(self):
         for shell in SHELLS:
             with self.subTest(shell=shell), tempfile.TemporaryDirectory() as td:
