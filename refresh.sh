@@ -116,6 +116,13 @@ refresh_framework() {   # Hz, user; lower min before peak on downshift (reverse 
       module_setting_set system "$2" min_refresh_rate "$1"
   fi
 }
+refresh_mode_read() {   # a root-owned literal choice written atomically by action.sh
+  _rm_mode=switch
+  if [ -r "$D/refresh_mode" ]; then
+    IFS= read -r _rm_mode < "$D/refresh_mode"
+  fi
+  case "$_rm_mode" in switch|120) REFRESH_MODE=$_rm_mode ;; *) REFRESH_MODE=switch ;; esac
+}
 refresh_seed_session() {   # - means unavailable/unknown, NOT proof that a prompt is absent
   dumpsys -t 1 fingerprint 2>/dev/null | awk '
     /Current (client|operation):/ {
@@ -242,7 +249,9 @@ LAST_MODES=unresolved; ATTEMPTS=0; WARNED=0; REVERIFY=0
 SET_PID=""; SET_HZ=""; SET_USER=""; SET_STARTED=0; SET_RC=$D/.refresh_settings_rc
 SCREEN=unknown; PANEL_LAST=unknown; POWER_KEY=""; SESSION_KEY=none; LAST_SESSION=none
 SEED_AUTH=-; SEED_EVENT=none; SEED_UNTIL=0; WAKE_UNTIL=0; UP_AT=0; NEXT_GAP_LOG=0
+REFRESH_MODE=switch; refresh_mode_read; LAST_REFRESH_MODE=$REFRESH_MODE
 refresh_now; START_UNTIL=$((REFRESH_NOW+150)); LAST_LOOP=$REFRESH_NOW
+log "refresh policy=$REFRESH_MODE"
 # --- refresh recovery helpers (host-tested in test_refresh_recovery.py) ---
 invalidate() {
   APPLIED=""; ACK=""; ATTEMPTS=0; WARNED=0; REVERIFY=0
@@ -327,12 +336,12 @@ seed_session() {   # never let a slow snapshot overwrite a newer bridge event
 # --- runtime snapshot helper (host-tested in test_low_cpu.py) ---
 RUNTIME_KEY=""
 runtime() {
-  _runtime_key="$$ $WATCH_PID $SFPID ${WANT:--} ${APPLIED:--} ${SF_ID:--} ${SF_HZ:--} ${SF_RENDER:--} $REPLY ${SCREEN:-unknown} ${WHY:--} ${ATTEMPTS:-0}"
+  _runtime_key="$$ $WATCH_PID $SFPID ${REFRESH_MODE:-switch} ${WANT:--} ${APPLIED:--} ${SF_ID:--} ${SF_HZ:--} ${SF_RENDER:--} $REPLY ${SCREEN:-unknown} ${WHY:--} ${ATTEMPTS:-0}"
   # Last state/observation, not a heartbeat: avoid identical per-second writes.
   if [ "${1:-0}" != 1 ] && [ "$_runtime_key" = "$RUNTIME_KEY" ] && [ -f "$D/.refresh_runtime" ]; then return 0; fi
   refresh_now
-  printf 'pid=%s watcher=%s sfpid=%s up_cs=%s target=%s verified=%s active_id=%s physical_hz=%s render_hz=%s reply=%s screen=%s trigger=%s retries=%s\n' \
-    "$$" "$WATCH_PID" "$SFPID" "$REFRESH_NOW" "${WANT:--}" "${APPLIED:--}" \
+  printf 'pid=%s watcher=%s sfpid=%s up_cs=%s policy=%s target=%s verified=%s active_id=%s physical_hz=%s render_hz=%s reply=%s screen=%s trigger=%s retries=%s\n' \
+    "$$" "$WATCH_PID" "$SFPID" "$REFRESH_NOW" "${REFRESH_MODE:-switch}" "${WANT:--}" "${APPLIED:--}" \
     "${SF_ID:--}" "${SF_HZ:--}" "${SF_RENDER:--}" "$REPLY" "${SCREEN:-unknown}" "${WHY:--}" "${ATTEMPTS:-0}" > "$D/.refresh_runtime.tmp" &&
     mv -f "$D/.refresh_runtime.tmp" "$D/.refresh_runtime" && RUNTIME_KEY=$_runtime_key
 }
@@ -449,6 +458,12 @@ refresh_nap() {   # interruptible sleep: a USR1 poke from a FOD helper ends it a
 # --- end fast switch helpers ---
 while [ ! -f "$D/.ui_stopping" ]; do
   refresh_now
+  refresh_mode_read
+  if [ "$REFRESH_MODE" != "$LAST_REFRESH_MODE" ]; then
+    LAST_REFRESH_MODE=$REFRESH_MODE
+    log "refresh policy changed to $REFRESH_MODE"
+    invalidate 1
+  fi
   # /proc/uptime includes deep sleep; loop counters do not. Also catch a whole
   # sleep/wake cycle whose panel/log edges were both missed while suspended.
   if [ $((REFRESH_NOW-LAST_LOOP)) -ge 100 ]; then
@@ -532,20 +547,24 @@ while [ ! -f "$D/.ui_stopping" ]; do
   read_session
   # A fingerprint snapshot is usable only until the next bridge event/epoch.
   if [ "$SEED_EVENT" = "$SESSION_KEY" ] && [ "$SEED_UNTIL" -gt "$REFRESH_NOW" ] && [ "$SEED_AUTH" != - ]; then AUTH=$SEED_AUTH; fi
-  WANT=$BASE_HZ; WHY=normal
-  if [ "$BOOT" = 0 ] || { [ "$SEEDED" = 0 ] && [ "$REFRESH_NOW" -lt "$START_UNTIL" ]; }; then WANT=120; WHY=boot; fi
-  if [ "$SCREEN" = off ]; then WANT=120; WHY=screen-off; fi
-  if [ "$REFRESH_NOW" -lt "$WAKE_UNTIL" ]; then WANT=120; WHY=wake; fi
-  if [ "$AUTH" = 1 ] || [ "$TOUCH" = 1 ]; then WANT=120; WHY=session; fi
-  if [ "$PRESS" = 1 ]; then WANT=120; WHY=press; fi
-  if [ "$HBM_LEASE" != - ]; then WANT=120; WHY=hbm; fi
-  if [ "$SO_LEASE" != - ]; then WANT=120; WHY=sofod; fi
-  # Downshifts are immediate. Coalesce terminal/up edges to avoid 120/144/120
-  # thrashing between pointer-up, HBM-off and a new authentication callback.
-  if [ "$WANT" = 120 ]; then UP_AT=0
-  elif [ "$LAST_WANT" = 120 ]; then
-    [ "$UP_AT" != 0 ] || UP_AT=$((REFRESH_NOW+15))
-    if [ "$REFRESH_NOW" -lt "$UP_AT" ]; then WANT=120; WHY=settle; fi
+  if [ "$REFRESH_MODE" = 120 ]; then
+    WANT=120; WHY=mode-120
+  else
+    WANT=$BASE_HZ; WHY=normal
+    if [ "$BOOT" = 0 ] || { [ "$SEEDED" = 0 ] && [ "$REFRESH_NOW" -lt "$START_UNTIL" ]; }; then WANT=120; WHY=boot; fi
+    if [ "$SCREEN" = off ]; then WANT=120; WHY=screen-off; fi
+    if [ "$REFRESH_NOW" -lt "$WAKE_UNTIL" ]; then WANT=120; WHY=wake; fi
+    if [ "$AUTH" = 1 ] || [ "$TOUCH" = 1 ]; then WANT=120; WHY=session; fi
+    if [ "$PRESS" = 1 ]; then WANT=120; WHY=press; fi
+    if [ "$HBM_LEASE" != - ]; then WANT=120; WHY=hbm; fi
+    if [ "$SO_LEASE" != - ]; then WANT=120; WHY=sofod; fi
+    # Downshifts are immediate. Coalesce terminal/up edges to avoid 120/144/120
+    # thrashing between pointer-up, HBM-off and a new authentication callback.
+    if [ "$WANT" = 120 ]; then UP_AT=0
+    elif [ "$LAST_WANT" = 120 ]; then
+      [ "$UP_AT" != 0 ] || UP_AT=$((REFRESH_NOW+15))
+      if [ "$REFRESH_NOW" -lt "$UP_AT" ]; then WANT=120; WHY=settle; fi
+    fi
   fi
   if [ "$WANT" != "$LAST_WANT" ]; then
     log "target=$WANT Hz trigger=$WHY"

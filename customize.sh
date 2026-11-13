@@ -72,6 +72,12 @@ cat > "$DATA/fod/refresh.conf" <<'CONF'
 RECONCILE_S=120
 SETTINGS_RATE=1
 CONF
+# Keep the Action-button selection across upgrades. The controller accepts only
+# these literal values and defaults safely to the existing auto-switch policy.
+REFRESH_MODE=""
+[ ! -r "$DATA/fod/refresh_mode" ] || IFS= read -r REFRESH_MODE < "$DATA/fod/refresh_mode"
+case "$REFRESH_MODE" in switch|120) ;; *) echo switch > "$DATA/fod/refresh_mode" ;; esac
+chmod 0644 "$DATA/fod/refresh_mode" 2>/dev/null
 rm -f "$DATA/fod/refresh.cache" "$DATA/fod/.refresh_want" "$DATA/fod/.ui_stopping"
 # A reinstallation owns the settings again; cancel only our deferred uninstall job.
 rm -f "$DATA/service.d/x6886_restore_settings.sh" "$DATA/fod/.settings_restore_lib.sh" \
