@@ -1,7 +1,37 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## Level 2 v3: screenshot-matched PHH and Android defaults
+## Level 2 v4: fast 144 Hz ↔ 120 Hz switching and one-touch screen-off FOD
+
+**Flash the new ZIP in Magisk and reboot.** Version code: **141**. Same module ID, so
+it updates the existing installation.
+
+- **Framework votes no longer block switching.** Android's `settings` command starts a
+  Java process for every call. The controller used to run up to four of them *before*
+  confirming 120 Hz. Now they run in one background worker after the pin and ACK, so
+  the FOD ACK, finger lift and the return to 144 Hz are never queued behind them.
+- **Instant controller wake-up.** FOD helpers and the fingerprint/power log watcher
+  wake the controller's 50 ms sleep with `SIGUSR1`. Helpers signal only the exact
+  PID + start time the controller published, so a stale or reused PID is never
+  signalled.
+- **No redundant re-pin.** If 120 Hz is already verified, a new FOD hold is checked
+  again right away without another Binder call. A mismatch still re-pins and repairs
+  the votes. The panel state is now read on every loop (builtin read, no fork).
+- **Screen-off FOD in one touch.** `sofod_touch` asks for 120 Hz before the panel
+  wakes and takes a fresh hold once it is on. Its ACK wait runs during the 80 ms
+  SystemUI delay instead of after it. HBM reuses that live post-wake ACK instead of
+  waiting a second time. Coordinate parsing and logging no longer fork before the
+  synthetic touch.
+- **Safety is unchanged.** Every wait still fails open and is bounded by uptime
+  (300 ms ACK, 1.2 s panel). The 150 ms upshift settle, HBM temperature/timeout limits
+  and all other tuning stay the same.
+
+**Validation:** host regression tests on bash, dash, mksh and BusyBox ash. With a
+simulated 1.5 s `settings` CLI, the 120 Hz ACK went from about 2.1 s to 0.06 s and
+the return to 144 Hz from about 1.2 s to 0.23 s. These are host numbers, not phone
+measurements, so test on the device.
+
+## Previous: Level 2 v3 — screenshot-matched PHH and Android defaults
 
 ### Full-charge screen-on-time baseline (experimental)
 

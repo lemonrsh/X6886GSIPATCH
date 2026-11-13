@@ -2,6 +2,9 @@
 # One writer: 144 Hz interactive / verified 120 Hz FOD, sleep and wake guard.
 # Boot-scoped state and monotonic deadlines; never persist/guess display mode IDs.
 MODDIR=${0%/*}
+# FIRST: FOD helpers / the bridge watcher wake the 50 ms nap with SIGUSR1. Install
+# the trap before anything can publish this PID (default USR1 action would kill us).
+trap ':' USR1
 MAIN_PID=$$
 D=/data/adb/fod
 LOG=$D/refresh.log
@@ -173,10 +176,13 @@ stop_events() {
 }
 cleanup() {
   stop_events
+  if [ -n "$SET_PID" ]; then kill "$SET_PID" 2>/dev/null || true; fi
+  rm -f "$SET_RC" "$SET_RC.tmp"
   rm -f "$D/.refresh.pid" "$D/.refresh_ready" "$D/.refresh_applied"
 }
-trap 'log "controller stopped by signal"; exit 0' INT TERM
-trap '_exit=$?; trap - EXIT; log "controller exit rc=$_exit"; cleanup' EXIT
+# A second TERM (uninstall + supervisor both stop us) must not cut cleanup short.
+trap 'trap "" INT TERM; log "controller stopped by signal"; exit 0' INT TERM
+trap '_exit=$?; trap - EXIT; trap "" INT TERM; log "controller exit rc=$_exit"; cleanup' EXIT
 watch_events() {
   trap - INT TERM EXIT
   while [ ! -f "$D/.ui_stopping" ] && kill -0 "$MAIN_PID" 2>/dev/null; do
@@ -197,6 +203,8 @@ watch_events() {
           _we_seq=$((_we_seq+1))
           printf '%s %s %s %s %s\n' "$REFRESH_BOOT" "$REFRESH_NOW" "$REFRESH_POWER" "$_we_epoch" "$_we_seq" > "$POWERF.tmp" &&
             mv -f "$POWERF.tmp" "$POWERF"
+          # Wake/sleep edges are acted on at once, not after the next nap.
+          kill -USR1 "$MAIN_PID" 2>/dev/null
         fi
         refresh_event_parse "$line"; _we_event=$REFRESH_EVENT
         case "$_we_event" in
@@ -211,6 +219,7 @@ watch_events() {
         if [ "$_we_session" = 1 ]; then _we_ttl=30000; else _we_ttl=800; fi
         printf '%s %s %s %s %s %s %s %s\n' "$REFRESH_BOOT" "$((REFRESH_NOW + _we_ttl))" "$_we_session" "$_we_touch" "$_we_epoch" "$_we_seq" "$_we_event" "$REFRESH_NOW" > "$SESSIONF.tmp" &&
           mv -f "$SESSIONF.tmp" "$SESSIONF"
+        kill -USR1 "$MAIN_PID" 2>/dev/null
       done
     )
     rm -f "$SESSIONF"
@@ -229,16 +238,27 @@ BASE_ID=""; FP_ID=""; BASE_HZ=120; SFPID=""; SFSTAMP=""; HALPID=""; HALSTAMP=""
 APPLIED=""; ACK=""; FRAMEWORK_HZ=""; USER_ID=""; BOOT=0; SEEDED=0
 SF_ID=""; SF_HZ=""; SF_RENDER=""; REPLY=none; LAST_WANT=""; CHECKED_TOKENS="- -"
 TICK=0; NEXT_SCAN=0; NEXT_SETTINGS=0; NEXT_CHECK=0; NEXT_VERIFY=0; NEXT_REQUEST=0; NEXT_SEED=0; NEXT_POWER=0; NEXT_RESCAN=0
-LAST_MODES=unresolved; ATTEMPTS=0; WARNED=0
+LAST_MODES=unresolved; ATTEMPTS=0; WARNED=0; REVERIFY=0
+SET_PID=""; SET_HZ=""; SET_USER=""; SET_STARTED=0; SET_RC=$D/.refresh_settings_rc
 SCREEN=unknown; PANEL_LAST=unknown; POWER_KEY=""; SESSION_KEY=none; LAST_SESSION=none
 SEED_AUTH=-; SEED_EVENT=none; SEED_UNTIL=0; WAKE_UNTIL=0; UP_AT=0; NEXT_GAP_LOG=0
 refresh_now; START_UNTIL=$((REFRESH_NOW+150)); LAST_LOOP=$REFRESH_NOW
 # --- refresh recovery helpers (host-tested in test_refresh_recovery.py) ---
 invalidate() {
-  APPLIED=""; ACK=""; ATTEMPTS=0; WARNED=0
+  APPLIED=""; ACK=""; ATTEMPTS=0; WARNED=0; REVERIFY=0
   NEXT_REQUEST=$REFRESH_NOW; NEXT_VERIFY=$REFRESH_NOW
   if [ "${1:-0}" = 1 ]; then FRAMEWORK_HZ=""; NEXT_SETTINGS=$REFRESH_NOW; fi
   rm -f "$D/.refresh_applied"
+}
+reverify() {   # a new FOD hold always needs a FRESH observation before its ACK
+  if [ "$APPLIED" = 120 ] && [ "$WANT" = 120 ]; then
+    # Already verified at 120: observe again right now and skip the redundant
+    # Binder pin. A mismatch takes the normal repair path (re-pin + votes).
+    ACK=""; REVERIFY=1; NEXT_VERIFY=$REFRESH_NOW
+    rm -f "$D/.refresh_applied"
+  else
+    invalidate
+  fi
 }
 new_epoch() {
   EPOCH_N=$((EPOCH_N+1)); EPOCH=$$-$EPOCH_N
@@ -348,7 +368,9 @@ EOF
   fi
   [ "$_cm_modes" = "$_cm_old" ] || invalidate 1
   if [ -n "$FP_ID" ]; then
-    printf '%s %s\n' "$REFRESH_BOOT" "$$" > "$D/.refresh_ready.tmp" &&
+    # PID + start time: helpers signal only this exact process (never a reused PID).
+    _cm_stamp=-; command -v process_stamp >/dev/null 2>&1 && process_stamp "$$" && _cm_stamp=$PROC_STAMP
+    printf '%s %s %s\n' "$REFRESH_BOOT" "$$" "$_cm_stamp" > "$D/.refresh_ready.tmp" &&
       mv -f "$D/.refresh_ready.tmp" "$D/.refresh_ready"
     NEXT_SCAN=$((REFRESH_NOW + RECONCILE_S * 100))
   else
@@ -367,6 +389,64 @@ EOF
   [ "$SF_ID" = "$ID" ] && [ "$SF_HZ" = "$WANT" ] &&
     { [ "$SF_RENDER" = - ] || [ "$SF_RENDER" = "$WANT" ]; }
 }
+# --- fast switch helpers (host-tested in test_fast_fod.py) ---
+SETTINGS_INFLIGHT=999999999
+refresh_reap() {   # reap one child even if a USR1 poke interrupts wait (no zombie)
+  _rr_n=0
+  while [ "$_rr_n" -lt 4 ]; do
+    wait "$1" 2>/dev/null
+    [ "$?" -gt 128 ] || return 0
+    _rr_n=$((_rr_n+1))
+  done
+}
+settings_start() {   # Hz user. The settings CLI starts a Java process (100s of ms):
+  # run it in ONE background worker so it never delays a pin, ACK or the next event.
+  rm -f "$SET_RC" "$SET_RC.tmp"
+  SET_HZ=$1; SET_USER=$2; refresh_now; SET_STARTED=$REFRESH_NOW
+  NEXT_SETTINGS=$SETTINGS_INFLIGHT   # invalidate/target changes overwrite this marker
+  (
+    trap - INT TERM EXIT
+    _ss_rc=1
+    if [ ! -f "$D/.ui_stopping" ] && refresh_framework "$1" "$2"; then _ss_rc=0; fi
+    printf '%s\n' "$_ss_rc" > "$SET_RC.tmp" && mv -f "$SET_RC.tmp" "$SET_RC"
+  ) &
+  SET_PID=$!
+}
+settings_poll() {   # reap a finished worker -> 0 when no worker is running
+  [ -n "$SET_PID" ] || return 0
+  _sp_rc=""
+  if [ -r "$SET_RC" ]; then
+    read -r _sp_rc < "$SET_RC"
+  elif [ $((REFRESH_NOW-SET_STARTED)) -lt 1000 ]; then
+    return 1
+  else
+    kill "$SET_PID" 2>/dev/null || true   # CLI hang without timeout support
+  fi
+  refresh_reap "$SET_PID"
+  SET_PID=""; rm -f "$SET_RC"
+  refresh_now
+  # A wake/target change/repair during the run asked for a fresh audit: keep it.
+  [ "$NEXT_SETTINGS" = "$SETTINGS_INFLIGHT" ] || return 0
+  if [ "$_sp_rc" = 0 ] && [ "$SET_HZ" = "$WANT" ] && [ "$SET_USER" = "$USER_ID" ]; then
+    FRAMEWORK_HZ=$WANT
+    if [ "$WANT" = 120 ]; then NEXT_SETTINGS=$((REFRESH_NOW+500)); else NEXT_SETTINGS=$((REFRESH_NOW+1500)); fi
+  elif [ "$_sp_rc" = 0 ]; then
+    NEXT_SETTINGS=$REFRESH_NOW
+  else
+    NEXT_SETTINGS=$((REFRESH_NOW+100))
+  fi
+  return 0
+}
+refresh_nap() {   # interruptible sleep: a USR1 poke from a FOD helper ends it at once
+  sleep "$1" & _nap_pid=$!
+  wait "$_nap_pid"; _nap_rc=$?
+  if [ "$_nap_rc" -gt 128 ]; then
+    kill "$_nap_pid" 2>/dev/null; refresh_reap "$_nap_pid"
+    return 0
+  fi
+  [ "$_nap_rc" = 0 ] || sleep 1   # no fractional sleep: never busy-loop
+}
+# --- end fast switch helpers ---
 while [ ! -f "$D/.ui_stopping" ]; do
   refresh_now
   # /proc/uptime includes deep sleep; loop counters do not. Also catch a whole
@@ -375,11 +455,10 @@ while [ ! -f "$D/.ui_stopping" ]; do
     recheck_gap resume
   fi
   LOOP_START=$REFRESH_NOW
-  if [ $((TICK % 2)) = 0 ]; then
-    refresh_panel
-    if [ "$PANEL" != unknown ] && [ "$PANEL" != "$PANEL_LAST" ]; then
-      PANEL_LAST=$PANEL; power_edge "$PANEL" panel
-    fi
+  # Builtin sysfs read every tick (no fork): catch the screen-off FOD wake fast.
+  refresh_panel
+  if [ "$PANEL" != unknown ] && [ "$PANEL" != "$PANEL_LAST" ]; then
+    PANEL_LAST=$PANEL; power_edge "$PANEL" panel
   fi
   if [ -r "$POWERF" ]; then
     _pw_boot=""; _pw_at=""; _pw_state=""; _pw_epoch=""; _pw_seq=""
@@ -476,30 +555,22 @@ while [ ! -f "$D/.ui_stopping" ]; do
   TOKENS="$HBM_LEASE $SO_LEASE"
   if [ "$TOKENS" != "$CHECKED_TOKENS" ]; then
     CHECKED_TOKENS=$TOKENS
-    # Even if target is already 120, a new hold must re-pin/re-observe after wake.
-    if [ "$TOKENS" != "- -" ]; then invalidate; fi
+    # Even if target is already 120, a new hold must be re-observed before its ACK.
+    if [ "$TOKENS" != "- -" ]; then reverify; fi
   fi
   if [ "$SESSION_KEY" != "$LAST_SESSION" ]; then
     LAST_SESSION=$SESSION_KEY
-    case "$SESSION_EVENT" in session_on|touch_on) invalidate ;; esac
+    case "$SESSION_EVENT" in session_on|touch_on) reverify ;; esac
   fi
   if [ -n "$FP_ID" ] && [ -n "$SFPID" ]; then
     if [ "$WANT" = 120 ]; then ID=$FP_ID; else ID=$BASE_ID; fi
     if [ "$APPLIED" != "$WANT" ] && [ "$REFRESH_NOW" -ge "$NEXT_REQUEST" ]; then request_mode; fi
-    # Re-read live votes periodically, not only when our cached target changes.
-    if [ "$BOOT" = 1 ] && [ "$SETTINGS_RATE" = 1 ] && [ -n "$USER_ID" ] && [ "$REFRESH_NOW" -ge "$NEXT_SETTINGS" ]; then
-      if refresh_framework "$WANT" "$USER_ID"; then
-        FRAMEWORK_HZ=$WANT
-        refresh_now
-        if [ "$WANT" = 120 ]; then NEXT_SETTINGS=$((REFRESH_NOW+500)); else NEXT_SETTINGS=$((REFRESH_NOW+1500)); fi
-      else refresh_now; NEXT_SETTINGS=$((REFRESH_NOW+100)); fi
-    fi
     if [ "$REFRESH_NOW" -ge "$NEXT_VERIFY" ]; then
       if observe; then
         if [ "$APPLIED" != "$WANT" ]; then
           log "$WANT Hz verified: mode=$SF_ID physical=$SF_HZ render=$SF_RENDER reply=$REPLY trigger=$WHY"
         fi
-        APPLIED=$WANT; WARNED=0; ATTEMPTS=0
+        APPLIED=$WANT; WARNED=0; ATTEMPTS=0; REVERIFY=0
         refresh_now
         if [ "$WANT" = 120 ]; then NEXT_VERIFY=$((REFRESH_NOW+100)); else NEXT_VERIFY=$((REFRESH_NOW+500)); fi
       else
@@ -517,16 +588,23 @@ while [ ! -f "$D/.ui_stopping" ]; do
         if [ "$ATTEMPTS" -ge 3 ] && [ "$REFRESH_NOW" -ge "$NEXT_RESCAN" ]; then
           NEXT_SCAN=$REFRESH_NOW; NEXT_RESCAN=$((REFRESH_NOW+1000))
         fi
+        REVERIFY=0
         if [ "$ATTEMPTS" -lt 3 ]; then NEXT_VERIFY=$((REFRESH_NOW+10)); else NEXT_VERIFY=$((REFRESH_NOW+100)); fi
       fi
       runtime 1
     fi
     # Only a matching observed mode + physical/render rate earns a token ACK.
-    if [ "$APPLIED" = "$WANT" ]; then
+    if [ "$APPLIED" = "$WANT" ] && [ "$REVERIFY" = 0 ]; then
       _ack="$REFRESH_BOOT $APPLIED $HBM_LEASE $SO_LEASE"
       if [ "$_ack" != "$ACK" ]; then
         printf '%s\n' "$_ack" > "$D/.refresh_applied.tmp" && mv -f "$D/.refresh_applied.tmp" "$D/.refresh_applied" && ACK=$_ack
       fi
+    fi
+    # Re-read live votes periodically, not only when our cached target changes.
+    # After the pin/ACK, and asynchronous: framework votes never gate FOD.
+    if [ "$BOOT" = 1 ] && [ "$SETTINGS_RATE" = 1 ] && [ -n "$USER_ID" ]; then
+      refresh_now
+      if settings_poll && [ "$REFRESH_NOW" -ge "$NEXT_SETTINGS" ]; then settings_start "$WANT" "$USER_ID"; fi
     fi
   fi
   # Seed AFTER the early pin, so a fingerprint dumpsys cannot delay pre-arming.
@@ -535,5 +613,5 @@ while [ ! -f "$D/.ui_stopping" ]; do
   refresh_now
   if [ $((REFRESH_NOW-LOOP_START)) -ge 100 ]; then recheck_gap iteration; fi
   LAST_LOOP=$REFRESH_NOW
-  sleep 0.05 || sleep 1
+  refresh_nap 0.05
 done

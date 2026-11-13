@@ -1,5 +1,18 @@
-X6886 GSI PATCH by lemonrsh — Level 2 v3 (versionCode 140)
+X6886 GSI PATCH by lemonrsh — Level 2 v4 (versionCode 141)
 ====================================
+
+FAST 144/120 Hz SWITCHING + ONE-TOUCH SCREEN-OFF FOD.
+Flash in Magisk and REBOOT. Same module ID: updates the existing installation.
+
+* Android settings votes run in a background worker after the pin/ACK, so they no
+  longer delay 120 Hz confirmation, finger lift or the return to 144 Hz.
+* FOD helpers and the log watcher wake the controller instantly (identity-checked
+  SIGUSR1). A new hold at verified 120 Hz is re-observed without a redundant pin.
+* Screen-off FOD: 120 Hz requested before the panel wakes; the post-wake ACK wait
+  overlaps the 80 ms SystemUI delay and HBM reuses it (no second wait).
+* All waits stay fail-open and bounded. Host tests only, not phone measurements.
+
+Previous Level 2 v3 details:
 
 SCREENSHOT-MATCHED PHH / Android defaults plus wake-safe 144/120 Hz recovery.
 Flash in Magisk and REBOOT. Same module ID: updates the existing installation.
