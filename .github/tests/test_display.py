@@ -569,6 +569,29 @@ class DisplayDaemonTests(unittest.TestCase):
                 self.assertTrue(dev.contents("fod/.refresh.pid"))
                 dev.wait(lambda: dev.contents("mode") == "2", check_controller=False)
 
+    def test_action_status_matches_controller_from_magisk_module_alias(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell, start_controller=False) as dev:
+                id_command = dev.bin / "id"
+                id_command.write_text("#!/bin/sh\necho 0\n")
+                id_command.chmod(0o755)
+                alias = dev.root / "modules_update" / "x6886gsipatch"
+                alias.mkdir(parents=True)
+                script = alias / "refresh.sh"
+                script.write_text("#!/bin/sh\nsleep 60\n")
+                controller = subprocess.Popen([shell, str(script)], env=dev.env,
+                                              stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.DEVNULL,
+                                              start_new_session=True)
+                dev.procs.append(controller)
+                dev.put("fod/.refresh.pid", controller.pid)
+                result = subprocess.run([shell, str(dev.mod / "action.sh"), "status"],
+                                        env=dev.env, text=True, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Refresh controller: yes (pid {controller.pid})", result.stdout)
+                self.assertIn("Refresh supervisor: no (pid -)", result.stdout)
+
     def test_action_button_toggles_and_waits_for_real_display_verification(self):
         for shell in SHELLS:
             with self.subTest(shell=shell), FakeAndroid(shell) as dev:

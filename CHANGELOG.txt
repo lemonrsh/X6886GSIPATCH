@@ -1,4 +1,4 @@
-Level 2 v7 (2026-11-14) - self-start refresh supervisor from Action
+Level 2 v7 (2026-11-13) - self-start refresh supervisor from Action
 * Version Level 2 v7 / versionCode 144.
 * If the refresh controller is missing when Action is tapped, start the supervisor
   in a detached session and wait for the controller to register before reporting status.
