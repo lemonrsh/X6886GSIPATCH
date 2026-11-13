@@ -1,13 +1,17 @@
-X6886 GSI PATCH by lemonrsh — Level 2 v5 (versionCode 142)
+X6886 GSI PATCH by lemonrsh — Level 2 v6 (versionCode 143)
 ====================================
 
-REFRESH MODE ACTION BUTTON + MODULE STATUS.
-Flash the ZIP in Magisk and reboot once. Open the module card and tap Action:
-Volume UP = 144 Hz normally / automatic 120 Hz for FOD; Volume DOWN = 120 Hz
-fixed everywhere; Power cancels where supported. The saved policy applies live
-and survives upgrades. Action output shows supervisor/controller liveness and the
-last physical/render-rate observation. WORKING means processes are alive, not that
-every panel accepted the requested mode. Host tests are not device validation.
+ONE-TAP REFRESH MODE TOGGLE WITH LIVE VERIFICATION.
+Flash the ZIP in Magisk and reboot once. Tap Action to alternate between:
+- 144 Hz normally / automatic 120 Hz for fingerprint use and screen-off FOD.
+- Fixed 120 Hz everywhere.
+The first tap from the default auto policy selects fixed 120 Hz; each later tap
+switches back and forth. The mode is saved and applied live without a reboot.
+Action output reports APPLIED only after physical/render verification, otherwise
+PENDING; it also shows controller liveness. Host tests do not verify the panel.
+
+Previous Level 2 v5 used a blocking volume-key prompt. v6 replaces it with direct
+tap-to-toggle so Action always makes a change or reports why it is pending.
 
 Previous Level 2 v4: FAST 144/120 Hz SWITCHING + ONE-TOUCH SCREEN-OFF FOD.
 Flash in Magisk and REBOOT. Same module ID: updates the existing installation.

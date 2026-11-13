@@ -1,28 +1,34 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## Level 2 v5: volume-key refresh mode selector and module status
+## Level 2 v6: one-tap refresh mode toggle with live verification
 
-**Flash the new ZIP in Magisk and reboot once.** Version code: **142**. The module ID
-is unchanged, so this updates the existing installation. After installation, open the
-module card in Magisk and tap **Action**:
+**Flash the new ZIP in Magisk and reboot once.** Version code: **143**. The module ID
+is unchanged, so this updates the existing installation. Tap the module's **Action**
+button to switch between the two policies immediately:
 
-- **Volume Up:** 144 Hz normally, with automatic switching to 120 Hz for fingerprint
-  authentication/enrolment, screen-off FOD, sleep and wake protection.
-- **Volume Down:** fixed 120 Hz everywhere; the controller continues to verify and
-  repair the physical mode and Android min/peak refresh settings.
-- **Power:** cancel without changing the selection (where the input driver exposes it).
+- **144 Hz <-> 120 Hz auto-switch:** 144 Hz normally; 120 Hz during fingerprint use,
+  screen-off FOD, sleep and wake protection.
+- **120 Hz everywhere:** request and maintain 120 Hz in all operating states.
 
-The selection is saved in `/data/adb/fod/refresh_mode`, survives module upgrades and
-is applied live without rebooting. Auto-switch remains the default for existing installs.
-The Action output shows whether the refresh supervisor/controller processes are running,
-the selected policy and the last physical/render-rate observation. **WORKING** means
-both controller processes are alive; it is not a guarantee that every ROM/panel accepted
-the requested rate. Check the last observation for actual verification.
+The first tap from a fresh install switches the default auto mode to fixed 120 Hz; each
+later tap alternates between the policies. The choice is saved in
+`/data/adb/fod/refresh_mode` and applied live without rebooting. The action now returns
+without waiting for hardware-key input, notifies the controller, and reports **APPLIED**
+only after the current policy and physical/render rate are verified. If verification is
+not available, it reports **PENDING** rather than claiming success. Action output also
+shows supervisor/controller liveness and the last display observation.
 
 The panel/ROM must expose a compatible 120 Hz mode. This cannot bypass display-driver
-or thermal limits, or make an FPS-capped app render at 120/144 FPS. Test FOD and both
-policies on-device; keep the previous release ZIP for rollback.
+or thermal limits, or make an FPS-capped app render at 120/144 FPS. Host tests do not
+verify the physical panel; test both policies and FOD on-device, and keep the previous
+release ZIP for rollback.
+
+## Previous: Level 2 v5 — volume-key refresh selector and module status
+
+Version code: **142**. That release used a blocking volume-key prompt in Magisk Action;
+Level 2 v6 replaces it with a direct tap-to-toggle so an action press always changes or
+reports the selected policy.
 
 ## Previous: Level 2 v4 — fast 144 Hz ↔ 120 Hz switching and one-touch screen-off FOD
 
