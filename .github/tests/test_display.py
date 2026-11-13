@@ -320,42 +320,47 @@ if module_setting_value '1.2.3'; then exit 1; fi
 
 
 class RefreshActionTests(unittest.TestCase):
-    def test_action_tap_really_toggles_policy_and_explicit_modes_are_supported(self):
-        cases = [
-            (None, [], "120", True),
-            ("120", [], "switch", True),
-            ("switch", ["120"], "120", True),
-            ("120", ["switch"], "switch", True),
-            ("120", ["status"], "120", False),
-        ]
+    def test_status_action_is_read_only_and_reports_missing_controller(self):
         for shell in SHELLS:
-            for initial, args, expected, changed in cases:
-                with self.subTest(shell=shell, initial=initial, args=args), tempfile.TemporaryDirectory() as td:
-                    root = pathlib.Path(td)
-                    bindir = root / "bin"; bindir.mkdir()
-                    fod = root / "fod"; fod.mkdir()
-                    if initial is not None:
-                        (fod / "refresh_mode").write_text(initial + "\n")
-                    id_command = bindir / "id"
-                    id_command.write_text("#!/bin/sh\necho 0\n")
-                    id_command.chmod(0o755)
-                    env = dict(os.environ, FODDATA=td, PATH=f"{bindir}:{os.environ['PATH']}")
-                    result = subprocess.run([shell, str(REPO / "action.sh"), *args], env=env,
-                                            text=True, stdout=subprocess.PIPE,
-                                            stderr=subprocess.PIPE, timeout=5)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertIn("Module status: NOT WORKING", result.stdout)
-                    self.assertEqual((fod / "refresh_mode").read_text().strip(), expected)
-                    if changed:
-                        self.assertIn("Refresh policy changed to:", result.stdout)
-                    else:
-                        self.assertNotIn("Refresh policy changed to:", result.stdout)
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as td:
+                root = pathlib.Path(td)
+                bindir = root / "bin"; bindir.mkdir()
+                fod = root / "fod"; fod.mkdir()
+                id_command = bindir / "id"
+                id_command.write_text("#!/bin/sh\necho 0\n")
+                id_command.chmod(0o755)
+                env = dict(os.environ, FODDATA=td, PATH=f"{bindir}:{os.environ['PATH']}")
+                result = subprocess.run([shell, str(REPO / "action.sh"), "status"], env=env,
+                                        text=True, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Refresh mode: 144 Hz <-> 120 Hz auto-switch", result.stdout)
+                self.assertIn("Module status: NOT WORKING", result.stdout)
+                self.assertFalse((fod / "refresh_mode").exists())
+
+    def test_invalid_action_argument_does_not_change_mode(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), tempfile.TemporaryDirectory() as td:
+                root = pathlib.Path(td)
+                bindir = root / "bin"; bindir.mkdir()
+                fod = root / "fod"; fod.mkdir()
+                (fod / "refresh_mode").write_text("120\n")
+                id_command = bindir / "id"
+                id_command.write_text("#!/bin/sh\necho 0\n")
+                id_command.chmod(0o755)
+                env = dict(os.environ, FODDATA=td, PATH=f"{bindir}:{os.environ['PATH']}")
+                result = subprocess.run([shell, str(REPO / "action.sh"), "invalid"], env=env,
+                                        text=True, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("Usage: action.sh", result.stdout)
+                self.assertEqual((fod / "refresh_mode").read_text().strip(), "120")
 
 
 class FakeAndroid:
     """A complete script instance with file-backed Android command stubs."""
 
-    def __init__(self, shell, display_modes=None, boot="1", pin_ok=True, seed=False, reply="zero", panel=None, power="Unknown"):
+    def __init__(self, shell, display_modes=None, boot="1", pin_ok=True, seed=False, reply="zero", panel=None, power="Unknown", start_controller=True):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.tmp.name)
         self.mod = self.root / "mod"; self.mod.mkdir()
@@ -460,7 +465,7 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
         self.hal = subprocess.Popen(["sleep", "60"])
         self.put("sfpid", str(self.sf.pid)); self.put("halpid", str(self.hal.pid))
         self.procs = []
-        self.proc = self.start("refresh.sh")
+        self.proc = self.start("refresh.sh") if start_controller else None
 
     def put(self, name, value):
         file = self.root / name
@@ -484,7 +489,7 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
         while time.monotonic() < deadline:
             if condition():
                 return
-            if check_controller and self.proc.poll() is not None:
+            if check_controller and self.proc is not None and self.proc.poll() is not None:
                 raise AssertionError(f"controller exited: {self.proc.returncode}; {self.proc.communicate()}")
             time.sleep(0.01)
         raise AssertionError("timed out: " + self.contents("fod/refresh.log"))
@@ -512,6 +517,27 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
             except ProcessLookupError:
                 pass
             proc.communicate(timeout=5)
+        owned = []
+        for filename, marker in [(".refresh_supervisor.pid", b"refresh_supervisor.sh"),
+                                 (".refresh.pid", b"refresh.sh")]:
+            try:
+                pid = int((self.data / filename).read_text().strip())
+                cmdline = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
+                if pid > 1 and marker in cmdline:
+                    owned.append(pid)
+                    os.kill(pid, signal.SIGTERM)
+            except (OSError, ValueError, ProcessLookupError):
+                pass
+        deadline = time.monotonic() + 2
+        while owned and time.monotonic() < deadline:
+            owned = [pid for pid in owned if pathlib.Path(f"/proc/{pid}").exists()]
+            if owned:
+                time.sleep(0.01)
+        for pid in owned:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         for proc in [self.sf, self.hal]:
             if proc.poll() is None:
                 proc.kill()
@@ -527,6 +553,22 @@ with open(os.environ["TESTROOT"] + "/events") as stream:
 
 
 class DisplayDaemonTests(unittest.TestCase):
+    def test_action_autostarts_missing_supervisor_and_applies_policy(self):
+        for shell in SHELLS:
+            with self.subTest(shell=shell), FakeAndroid(shell, start_controller=False) as dev:
+                id_command = dev.bin / "id"
+                id_command.write_text("#!/bin/sh\necho 0\n")
+                id_command.chmod(0o755)
+                result = subprocess.run([shell, str(dev.mod / "action.sh")], env=dev.env,
+                                        text=True, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, timeout=12)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("Refresh policy changed to: 120 Hz everywhere", result.stdout)
+                self.assertIn("APPLIED: policy=120, target=120 Hz, verified=120 Hz", result.stdout)
+                self.assertTrue(dev.contents("fod/.refresh_supervisor.pid"))
+                self.assertTrue(dev.contents("fod/.refresh.pid"))
+                dev.wait(lambda: dev.contents("mode") == "2", check_controller=False)
+
     def test_action_button_toggles_and_waits_for_real_display_verification(self):
         for shell in SHELLS:
             with self.subTest(shell=shell), FakeAndroid(shell) as dev:
@@ -862,7 +904,7 @@ class DisplayDaemonTests(unittest.TestCase):
                 result = subprocess.run([shell, str(dev.mod / "diag.sh"), "refresh"], env=dev.env,
                                         text=True, capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                for text in ["version=Level 2 v6", "refresh: running=yes", "refresh_supervisor: running=yes",
+                for text in ["version=Level 2 v7", "refresh: running=yes", "refresh_supervisor: running=yes",
                              "verified ACK", "physical_hz=144", "Parcel(NULL)", "activeMode={id=3"]:
                     self.assertIn(text, result.stdout)
                 self.assertNotIn("== top threads", result.stdout)
@@ -891,7 +933,7 @@ class DisplayDaemonTests(unittest.TestCase):
         self.assertIn('if [ "$1" = refresh ]', read("diag.sh"))
         self.assertNotIn("TARGET_HZ=120", read("customize.sh"))
         self.assertNotIn("fixed 120 Hz", read("diag.sh"))
-        self.assertIn("version=Level 2 v6\nversionCode=143", read("module.prop"))
+        self.assertIn("version=Level 2 v7\nversionCode=144", read("module.prop"))
         self.assertIn("APPLIED:", read("action.sh"))
         self.assertNotIn("getevent", read("action.sh"))
         self.assertIn("refresh_mode_read", read("refresh.sh"))

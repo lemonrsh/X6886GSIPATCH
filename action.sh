@@ -29,7 +29,9 @@ pid_is_running() {   # PID file, script basename; leaves checked PID in CHECKED_
   [ "$CHECKED_PID" -gt 1 ] || return 1
   kill -0 "$CHECKED_PID" 2>/dev/null || return 1
   [ -r "/proc/$CHECKED_PID/cmdline" ] || return 1
-  grep -F -q "$MODDIR/$2.sh" "/proc/$CHECKED_PID/cmdline" 2>/dev/null
+  # Match by script basename: Magisk can expose the same module through a
+  # modules/ or modules_update/ path, while the PID files are stable in /data/adb.
+  grep -F -q "$2.sh" "/proc/$CHECKED_PID/cmdline" 2>/dev/null
 }
 
 read_runtime() {
@@ -128,6 +130,33 @@ wait_for_mode() {   # policy; up to four seconds for a fresh verified observatio
   return 1
 }
 
+start_refresh_controller() {   # recover if boot hooks did not leave a live controller
+  pid_is_running "$D/.refresh.pid" refresh && return 0
+  [ -f "$MODDIR/refresh_supervisor.sh" ] || return 1
+  mkdir -p "$D" 2>/dev/null || return 1
+  if ! pid_is_running "$D/.refresh_supervisor.pid" refresh_supervisor; then
+    if command -v setsid >/dev/null 2>&1; then
+      setsid sh "$MODDIR/refresh_supervisor.sh" >> "$D/refresh_errors.log" 2>&1 </dev/null &
+    else
+      sh "$MODDIR/refresh_supervisor.sh" >> "$D/refresh_errors.log" 2>&1 </dev/null &
+    fi
+  fi
+  _start_count=0
+  while [ "$_start_count" -lt 25 ]; do
+    pid_is_running "$D/.refresh.pid" refresh && return 0
+    sleep 0.2
+    _start_count=$((_start_count+1))
+  done
+  return 1
+}
+
+print_startup_errors() {
+  if [ -s "$D/refresh_errors.log" ]; then
+    say 'Recent refresh startup log:'
+    tail -n 8 "$D/refresh_errors.log" 2>/dev/null
+  fi
+}
+
 if [ ! -f "$MODDIR/module.prop" ]; then
   say 'ERROR: cannot find this module installation.'
   exit 1
@@ -163,17 +192,19 @@ read_mode
 say "Refresh policy changed to: $MODE_LABEL"
 if [ -f "$MODDIR/disable" ] || [ -f "$MODDIR/remove" ]; then
   say 'The module is disabled/removing; the saved policy will apply when enabled again.'
-elif pid_is_running "$D/.refresh.pid" refresh; then
-  kill -USR1 "$CHECKED_PID" 2>/dev/null || true
-  say 'Refresh controller notified; waiting for its display observation...'
+elif start_refresh_controller; then
+  pid_is_running "$D/.refresh.pid" refresh && kill -USR1 "$CHECKED_PID" 2>/dev/null || true
+  say 'Refresh controller is running; waiting for its display observation...'
   if wait_for_mode "$TARGET_MODE"; then
     read_runtime
     say "APPLIED: policy=$RT_POLICY, target=$RT_TARGET Hz, verified=$RT_VERIFIED Hz, physical=$RT_PHYSICAL Hz, render=$RT_RENDER Hz."
   else
     say 'PENDING: policy was saved, but the controller has not verified the display mode yet.'
     say 'Check the panel/ROM mode table and refresh.log if this persists.'
+    print_startup_errors
   fi
 else
-  say 'SAVED, NOT APPLIED: refresh controller is not running. Reboot or check module status.'
+  say 'SAVED, NOT APPLIED: could not start the refresh controller. Check module files and startup log.'
+  print_startup_errors
 fi
 print_status

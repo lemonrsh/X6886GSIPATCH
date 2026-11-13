@@ -1,3 +1,13 @@
+Level 2 v7 (2026-11-14) - self-start refresh supervisor from Action
+* Version Level 2 v7 / versionCode 144.
+* If the refresh controller is missing when Action is tapped, start the supervisor
+  in a detached session and wait for the controller to register before reporting status.
+  Match the module-private PID files by script basename to tolerate Magisk module path
+  aliases such as modules/ versus modules_update/.
+* Report APPLIED only after policy and physical/render rates agree. On startup failure,
+  show recent controller error-log lines instead of silently saving an unapplied mode.
+* Add host coverage for Action-triggered supervisor startup and live 120/auto toggles.
+
 Level 2 v6 (2026-11-13) - reliable one-tap refresh mode toggle
 * Version Level 2 v6 / versionCode 143.
 * Replace the blocking volume-key Action prompt with a direct tap-to-toggle between

@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh - Level 2 v6
-version=Level 2 v6
-versionCode=143
+name=X6886 GSI PATCH by lemonrsh - Level 2 v7
+version=Level 2 v7
+versionCode=144
 author=lemonrsh
-description=Level 2 v6: one-tap Magisk Action toggle between 144/120 Hz auto-switch and fixed 120 Hz everywhere, with live physical/render verification. Retains one-touch screen-off FOD, HBM safety, animations, DRAM and performance/download fixes.
+description=Level 2 v7: Action toggles 144/120 Hz auto-switch or fixed 120 Hz; auto-starts missing refresh supervisor and confirms physical/render rate. Retains one-touch screen-off FOD, HBM safety, animations, DRAM and performance/download fixes.

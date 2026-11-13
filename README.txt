@@ -1,17 +1,17 @@
-X6886 GSI PATCH by lemonrsh — Level 2 v6 (versionCode 143)
+X6886 GSI PATCH by lemonrsh — Level 2 v7 (versionCode 144)
 ====================================
 
-ONE-TAP REFRESH MODE TOGGLE WITH LIVE VERIFICATION.
+ACTION MODE TOGGLE + REFRESH CONTROLLER SELF-START.
 Flash the ZIP in Magisk and reboot once. Tap Action to alternate between:
 - 144 Hz normally / automatic 120 Hz for fingerprint use and screen-off FOD.
 - Fixed 120 Hz everywhere.
-The first tap from the default auto policy selects fixed 120 Hz; each later tap
-switches back and forth. The mode is saved and applied live without a reboot.
-Action output reports APPLIED only after physical/render verification, otherwise
-PENDING; it also shows controller liveness. Host tests do not verify the panel.
+The first tap from default auto mode selects fixed 120 Hz; each later tap switches
+back. If the refresh controller is missing, Action starts its supervisor and waits
+for physical/render verification. It reports APPLIED only when confirmed, otherwise
+PENDING with startup errors. Host tests do not verify the physical panel.
 
-Previous Level 2 v5 used a blocking volume-key prompt. v6 replaces it with direct
-tap-to-toggle so Action always makes a change or reports why it is pending.
+Previous Level 2 v6 added the direct one-tap toggle. v7 retains it and starts the
+supervisor from Action when the boot hooks did not leave it running.
 
 Previous Level 2 v4: FAST 144/120 Hz SWITCHING + ONE-TOUCH SCREEN-OFF FOD.
 Flash in Magisk and REBOOT. Same module ID: updates the existing installation.
