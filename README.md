@@ -1,28 +1,31 @@
 # X6886GSIPATCH
 A magisk module FOD SOFOD performance and many fixes on aosp gsi running on x6886
 
-## Level 2 v6: one-tap refresh mode toggle with live verification
+## Level 2 v7: self-starting refresh controller from Action
 
-**Flash the new ZIP in Magisk and reboot once.** Version code: **143**. The module ID
+**Flash the new ZIP in Magisk and reboot once.** Version code: **144**. The module ID
 is unchanged, so this updates the existing installation. Tap the module's **Action**
-button to switch between the two policies immediately:
+button to alternate between:
 
 - **144 Hz <-> 120 Hz auto-switch:** 144 Hz normally; 120 Hz during fingerprint use,
   screen-off FOD, sleep and wake protection.
 - **120 Hz everywhere:** request and maintain 120 Hz in all operating states.
 
 The first tap from a fresh install switches the default auto mode to fixed 120 Hz; each
-later tap alternates between the policies. The choice is saved in
-`/data/adb/fod/refresh_mode` and applied live without rebooting. The action now returns
-without waiting for hardware-key input, notifies the controller, and reports **APPLIED**
-only after the current policy and physical/render rate are verified. If verification is
-not available, it reports **PENDING** rather than claiming success. Action output also
-shows supervisor/controller liveness and the last display observation.
+later tap switches back. The choice is saved in `/data/adb/fod/refresh_mode`. If boot
+hooks did not leave the refresh controller running, Action now starts its supervisor,
+then waits for a real physical/render-rate observation. It reports **APPLIED** only on
+verification; otherwise it reports **PENDING** and includes recent startup errors.
 
 The panel/ROM must expose a compatible 120 Hz mode. This cannot bypass display-driver
 or thermal limits, or make an FPS-capped app render at 120/144 FPS. Host tests do not
 verify the physical panel; test both policies and FOD on-device, and keep the previous
 release ZIP for rollback.
+
+## Previous: Level 2 v6 — one-tap refresh mode toggle with live verification
+
+Version code: **143**. v6 replaced the blocking volume-key prompt with direct tap-to-toggle.
+The v7 update keeps that interaction and adds a supervisor/controller self-start fallback.
 
 ## Previous: Level 2 v5 — volume-key refresh selector and module status
 
