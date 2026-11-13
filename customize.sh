@@ -78,7 +78,7 @@ rm -f "$DATA/service.d/x6886_restore_settings.sh" "$DATA/fod/.settings_restore_l
   "$DATA/fod/.rom_restore_lib.sh" "$DATA/fod/.rom_restore.dex" "$DATA/fod/.rom_restore.conf"
 if [ ! -f "$DATA/fod/gsi.conf" ]; then
 cat > "$DATA/fod/gsi.conf" <<'CONF'
-PERF_GOVERNOR=0   # 1 = pin CPU policies to the performance governor (more heat and battery drain)
+PERF_GOVERNOR=1   # CPU performance mode is enforced by perf_tweaks.sh
 SF_BOOST=1        # SurfaceFlinger -> top-app cpuset, nice -8
 CONF
 fi
