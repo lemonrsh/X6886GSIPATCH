@@ -140,7 +140,7 @@ if grep -q "^CAP_FIX=" "$DATA/fod/gsi.conf" 2>/dev/null; then
 else
   echo "CAP_FIX=0" >> "$DATA/fod/gsi.conf"
 fi
-# v10.5: SOT watcher/config removed; this module does not manage Settings battery history.
+# Remove only legacy broken SOT watcher state; current full-charge reset uses sot_reset.conf.
 rm -f "$DATA/fod/screentime.conf" "$DATA/fod/screentime.now"
 # Double-tap-to-wake listener/config removed.
 rm -f "$DATA/fod/dt2w.conf" "$DATA/fod/dt2w.log" "$DATA/fod/dt2w_last_wake" "$DATA/fod/.dt2w_main.pid" "$DATA/fod/.dt2w_getevent.pid"
@@ -152,9 +152,17 @@ rm -f "$DATA/fod/gpu.conf" "$DATA/fod/gpu.orig" "$DATA/fod/gpu.log" "$DATA/fod/.
 # Live PID files belong to the running controller; stale PIDs are checked on launch.
 rm -f "$DATA/fod/safe.flag" "$DATA/fod/bootcount"
 ui_print "- Configs in /data/adb/fod: hbm.conf refresh.conf gsi.conf dlfix.conf dram.conf sofod_touch.conf(optional)"
-ui_print "- v10.5: SOT watcher removed; Settings battery history/database are untouched."
+# Full-charge BatteryStats reset is opt-out; config is preserved across upgrades.
+if [ ! -f "$DATA/fod/sot_reset.conf" ]; then
+cat > "$DATA/fod/sot_reset.conf" <<'CONF'
+# Reset Android BatteryStats once when battery reports 100% and status Full.
+# This restarts the Settings battery-history/SOT baseline; SOT_RESET=0 disables it.
+SOT_RESET=1
+CONF
+fi
+ui_print "- SOT: one BatteryStats reset per full-charge event (sot_reset.conf; opt-out available)."
 ui_print "- Battery sysfs scaling remains disabled."
-ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log dram.log sofod_touch.log gsi.log"
+ui_print "- Logs in /data/adb/fod: hbm.log hal.log refresh.log dlfix.log dram.log sofod_touch.log gsi.log sot_reset.log"
 ui_print "- Level 2 v2: wake/boot-safe refresh recovery; other tuning is retained."
 ui_print "- Android animation scales = 0.4x (window / transition / animator)."
 ui_print "- 144 Hz normal / verified 120 Hz FOD; 120 Hz pre-armed during sleep/early boot."

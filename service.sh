@@ -11,7 +11,7 @@ MODDIR=${0%/*}
 # Finite, independent boot defaults task; CE/PIN waits never block FOD or refresh.
 [ -f "$MODDIR/rom_defaults.sh" ] && ( sh "$MODDIR/rom_defaults.sh" >/dev/null 2>&1 & )
 (
-  for part in animations.sh fod_service.sh dramlock.sh dlfix.sh perf_tweaks.sh messenger_bg.sh otp_autofix.sh; do
+  for part in animations.sh fod_service.sh dramlock.sh dlfix.sh perf_tweaks.sh messenger_bg.sh otp_autofix.sh sot_reset.sh; do
     if [ -f "$MODDIR/$part" ]; then
       ( sh "$MODDIR/$part" >/dev/null 2>&1 & )
     fi
