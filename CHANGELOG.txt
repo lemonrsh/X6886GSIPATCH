@@ -1,3 +1,29 @@
+Level 2 v4 (2026-11-13) - fast 144/120 Hz switching and one-touch screen-off FOD
+* Framework refresh votes (Android `settings` CLI, a Java process per call) now run in
+  one background worker after the pin/ACK. Previously up to four sequential calls
+  blocked the controller before it could verify 120 Hz, publish the FOD ACK, react to
+  finger lift or return to 144 Hz. Ordering, ownership and uninstall restore unchanged.
+* The controller's 50 ms nap is interruptible: FOD helpers and the bridge log watcher
+  wake it with SIGUSR1, so leases, touch/auth and wake/sleep edges are handled at once.
+  Helpers signal only the PID + start-time the controller published after installing
+  its trap; stale or reused PIDs are never signalled.
+* A new FOD hold when 120 Hz is already verified is re-observed immediately without a
+  redundant Binder pin; a mismatch still takes the full re-pin + votes repair path.
+  Panel DPMS is read every loop (builtin, no fork) to catch the screen-off FOD wake.
+* Screen-off FOD (sofod_touch v9): 120 Hz is requested before the panel wakes, then a
+  fresh hold is taken after DPMS is on; its bounded ACK wait overlaps the 80 ms
+  SystemUI delay (max, not sum). HBM reuses that live post-wake ACK instead of a second
+  serial wait. Coordinates are parsed in pure shell; logging and device lookups no
+  longer fork before the synthetic touch. fod_service polls SystemUI's press every
+  10 ms and logs after key195 so the HBM -> capture lead stays exactly 40 ms.
+* All waits stay fail-open and uptime-bounded (300 ms ACK budget, 1.2 s panel wait).
+  The 150 ms upshift settle, HBM temperature/timeout safety and existing tuning are
+  unchanged. A second TERM no longer interrupts controller cleanup.
+* Host regression tests (bash, dash, mksh, BusyBox ash). With a simulated 1.5 s
+  settings CLI, the 120 Hz ACK fell from ~2.1 s to ~0.06 s and the return to 144 Hz
+  from ~1.2 s to ~0.23 s. Host timings are not phone measurements; on-device testing
+  is still required.
+
 Level 2 v3.1 (2026-11-13) - restore Android CPU governor policy and reduce background work
 * Remove the forced, periodic CPU performance-governor loop. CPU governor policy is
   left to Android/vendor power HALs by default; PERF_GOVERNOR=1 remains an explicit

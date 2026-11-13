@@ -9,6 +9,8 @@ D=/data/adb/fod; LOG=$D/hbm.log
 # Best-effort handshake: request 120 Hz before HBM/key195, never block capture
 # indefinitely if the refresh service/ROM does not support the pin.
 refresh_fod_begin() { :; }
+refresh_fod_request() { :; }
+refresh_fod_wait() { :; }
 refresh_fod_end() { :; }
 REFRESH_FOD_TOKEN=""
 [ -f "$MODDIR/refresh_fod.sh" ] && . "$MODDIR/refresh_fod.sh"
@@ -190,8 +192,8 @@ wait_fp1() {   # $1 = budget in 10 ms units; real elapsed time is measured, so a
     S=$NOW_CS
     if [ $PROPWAIT = 1 ]; then
       timeout 0.1 resetprop -w sys.phh.oplus.fppress 0 >/dev/null 2>&1
-      now_cs; [ $((NOW_CS-S)) -lt 2 ] && sleep 0.02
-    else sleep 0.02; fi
+      now_cs; [ $((NOW_CS-S)) -lt 2 ] && sleep 0.01
+    else sleep 0.01; fi   # 10 ms poll: HBM/capture starts sooner after SystemUI's press
   done
   [ "$(getprop sys.phh.oplus.fppress)" = 1 ]
 }
@@ -212,9 +214,11 @@ press() {   # BTN_TOUCH went down
   wait_fp1 $W
   [ "$(getprop sys.phh.oplus.fppress)" = 1 ] || return
   hbm_on || return
-  log "finger on sensor (fppress, waited $i) -> HBM on"
   INJ=0
-  if [ "$INJECT195" = 1 ]; then sleep $LEAD_S; inject 1; INJ=1; log "injected key195 down"; fi
+  # Keep the HBM -> key195 lead exactly LEAD_S: log (forks date) after the inject.
+  if [ "$INJECT195" = 1 ]; then sleep $LEAD_S; inject 1; INJ=1; fi
+  log "finger on sensor (fppress, waited $i) -> HBM on"
+  [ "$INJ" = 1 ] && log "injected key195 down"
   hold_fp $MAX_N
   if [ "$INJ" = 1 ]; then inject 0; log "injected key195 up"; fi
   hbm_off; log "HBM off (held=$n)"

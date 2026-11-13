@@ -161,7 +161,11 @@ hbm_off
                 result = run_shell(shell, script)
                 self.assertEqual(result.returncode, 0, result.stderr)
         sofod = read("sofod_touch.sh").split("refire() {", 1)[1]
-        self.assertLess(sofod.index("refresh_fod_begin sofod"), sofod.index("touch_down"))
+        # 120 Hz is requested before the panel wait, re-requested after the wake and
+        # its bounded ACK wait always completes before the synthetic touch.
+        self.assertLess(sofod.index("refresh_fod_request sofod"), sofod.index("panel_wait"))
+        self.assertLess(sofod.index("panel_wait"), sofod.rindex("refresh_fod_request sofod"))
+        self.assertLess(sofod.index("refresh_fod_wait sofod"), sofod.index("touch_down"))
         self.assertLess(sofod.index("touch_up\n    log \"synthetic touch released\""), sofod.index("refresh_fod_end sofod"))
 
     def test_boot_scoped_leases_expire_and_stale_release_cannot_clear_new_token(self):
@@ -767,7 +771,7 @@ class DisplayDaemonTests(unittest.TestCase):
                 result = subprocess.run([shell, str(dev.mod / "diag.sh"), "refresh"], env=dev.env,
                                         text=True, capture_output=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                for text in ["version=Level 2 v3", "refresh: running=yes", "refresh_supervisor: running=yes",
+                for text in ["version=Level 2 v4", "refresh: running=yes", "refresh_supervisor: running=yes",
                              "verified ACK", "physical_hz=144", "Parcel(NULL)", "activeMode={id=3"]:
                     self.assertIn(text, result.stdout)
                 self.assertNotIn("== top threads", result.stdout)
@@ -796,7 +800,7 @@ class DisplayDaemonTests(unittest.TestCase):
         self.assertIn('if [ "$1" = refresh ]', read("diag.sh"))
         self.assertNotIn("TARGET_HZ=120", read("customize.sh"))
         self.assertNotIn("fixed 120 Hz", read("diag.sh"))
-        self.assertIn("version=Level 2 v3\nversionCode=140", read("module.prop"))
+        self.assertIn("version=Level 2 v4\nversionCode=141", read("module.prop"))
         self.assertIn("id=X6886_GSI_PATCH_level_1_by_lemonrsh\n", read("module.prop"))
         self.assertIn("module_settings_restore", read("uninstall.sh"))
 

@@ -1,6 +1,6 @@
 id=X6886_GSI_PATCH_level_1_by_lemonrsh
-name=X6886 GSI PATCH by lemonrsh - Level 2 v3
-version=Level 2 v3
-versionCode=140
+name=X6886 GSI PATCH by lemonrsh - Level 2 v4
+version=Level 2 v4
+versionCode=141
 author=lemonrsh
-description=Level 2 v3: screenshot-matched PHH and Android settings, start/end status padding 1, immediate lock and safe eligible-PIN auto-confirm. Retains wake-safe 144/120 Hz FOD, HBM safety, animations, DRAM and performance/download fixes.
+description=Level 2 v4: fast 144/120 Hz switching and one-touch screen-off FOD (async framework votes, instant controller wake-up, overlapped 120 Hz handshake). Retains PHH/Android defaults, HBM safety, animations, DRAM and performance/download fixes.

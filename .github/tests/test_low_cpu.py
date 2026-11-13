@@ -431,7 +431,8 @@ refresh_event_parse 'ICancellationSignal::cancel invoked'
                         "LEAD_S=0.04", "PROP_WAIT=0", "sleep 15", "sleep 10", "[ $R -lt 3 ]"]:
             self.assertIn(literal, fod)
         refresh = read("refresh.sh")
-        self.assertIn("sleep 0.05 || sleep 1", refresh)
+        self.assertIn("refresh_nap 0.05", refresh)
+        self.assertIn('[ "$_nap_rc" = 0 ] || sleep 1', refresh)
         self.assertIn("TICK % 2", refresh)
         self.assertIn("RECONCILE_S=120", refresh)
         self.assertIn('module_setting_set global 0 "$key" 0.4', read("animations.sh"))

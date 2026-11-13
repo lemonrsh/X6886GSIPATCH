@@ -21,37 +21,79 @@ refresh_lease() {   # source -> REFRESH_LEASE (token or -)
     [ -n "$_rl_token" ] && REFRESH_LEASE=$_rl_token
   return 0
 }
-refresh_fod_begin() {   # hbm | sofod; always fail open (never break fingerprint capture)
+# --- fast FOD handshake (host-tested in test_fast_fod.py) ---
+refresh_fod_live() {   # -> REFRESH_FOD_PID of a live controller with discovered 120 Hz
+  REFRESH_FOD_PID=""; REFRESH_FOD_STAMP=""
+  _rf_ready=""; _rf_pid=""; _rf_stamp=""
+  [ -r "$D/.refresh_ready" ] && read -r _rf_ready _rf_pid _rf_stamp < "$D/.refresh_ready"
+  [ "$_rf_ready" = "$REFRESH_BOOT" ] || return 1
+  case "$_rf_pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$_rf_pid" 2>/dev/null || return 1
+  REFRESH_FOD_PID=$_rf_pid; REFRESH_FOD_STAMP=$_rf_stamp
+}
+refresh_fod_poke() {   # wake the controller's 50 ms nap at once (identity-checked)
+  # Only the PID+start-time written by the controller after it installed its USR1
+  # trap is ever signalled; a stale/reused PID or missing stamp is never touched.
+  [ -n "$REFRESH_FOD_PID" ] && [ -n "$REFRESH_FOD_STAMP" ] || return 0
+  command -v process_stamp >/dev/null 2>&1 || return 0
+  process_stamp "$REFRESH_FOD_PID" && [ "$PROC_STAMP" = "$REFRESH_FOD_STAMP" ] || return 0
+  kill -USR1 "$REFRESH_FOD_PID" 2>/dev/null
+  return 0
+}
+refresh_fod_request() {   # hbm | sofod -> REFRESH_FOD_TOKEN; writes the lease, never waits
   case "$1" in hbm|sofod) ;; *) return 0 ;; esac
-  REFRESH_FOD_TOKEN=""
+  REFRESH_FOD_TOKEN=""; REFRESH_FOD_DEADLINE=0
   [ -f "$D/.ui_stopping" ] && return 0
   refresh_boot; refresh_now
   read -r REFRESH_FOD_TOKEN < /proc/sys/kernel/random/uuid
   [ -n "$REFRESH_FOD_TOKEN" ] || REFRESH_FOD_TOKEN=$$-$REFRESH_NOW
   printf '%s %s %s\n' "$REFRESH_BOOT" "$((REFRESH_NOW + 800))" "$REFRESH_FOD_TOKEN" > "$D/.refresh_hold.$1.tmp.$$" &&
-    mv -f "$D/.refresh_hold.$1.tmp.$$" "$D/.refresh_hold.$1" || return 0
-  # Skip the wait when no live controller has discovered a 120 Hz mode. An
-  # ACK requires observing the requested mode/rate, not just a Binder reply.
-  _rf_ready=""; _rf_pid=""
-  [ -r "$D/.refresh_ready" ] && read -r _rf_ready _rf_pid < "$D/.refresh_ready"
-  [ "$_rf_ready" = "$REFRESH_BOOT" ] || return 0
-  case "$_rf_pid" in ''|*[!0-9]*) return 0 ;; esac
-  kill -0 "$_rf_pid" 2>/dev/null || return 0
-  _rf_n=0
-  while [ "$_rf_n" -lt 30 ]; do
-    _rf_boot=""; _rf_hz=""; _rf_hbm=""; _rf_so=""
-    if [ -r "$D/.refresh_applied" ]; then
-      read -r _rf_boot _rf_hz _rf_hbm _rf_so < "$D/.refresh_applied"
-      if [ "$_rf_boot" = "$REFRESH_BOOT" ] && [ "$_rf_hz" = 120 ]; then
-        case "$1" in hbm) [ "$_rf_hbm" = "$REFRESH_FOD_TOKEN" ] && return 0 ;;
-                      sofod) [ "$_rf_so" = "$REFRESH_FOD_TOKEN" ] && return 0 ;; esac
-      fi
-    fi
-    sleep 0.01 || break
-    _rf_n=$((_rf_n+1))
-  done
+    mv -f "$D/.refresh_hold.$1.tmp.$$" "$D/.refresh_hold.$1" || { REFRESH_FOD_TOKEN=""; return 0; }
+  # The fail-open budget starts at the request, so callers can overlap it with
+  # other work (panel wake / SystemUI delay) instead of paying it serially.
+  REFRESH_FOD_DEADLINE=$((REFRESH_NOW + 30))
+  refresh_fod_live && refresh_fod_poke
   return 0
 }
+refresh_fod_acked() {   # source -> 0 when the controller has OBSERVED 120 Hz for this hold
+  _rf_boot=""; _rf_hz=""; _rf_hbm=""; _rf_so=""
+  [ -r "$D/.refresh_applied" ] || return 1
+  read -r _rf_boot _rf_hz _rf_hbm _rf_so < "$D/.refresh_applied"
+  [ "$_rf_boot" = "$REFRESH_BOOT" ] && [ "$_rf_hz" = 120 ] || return 1
+  case "$1" in
+    hbm)
+      [ "$_rf_hbm" = "$REFRESH_FOD_TOKEN" ] && return 0
+      # Screen-off FOD: sofod_touch took a fresh lease AFTER the panel woke and
+      # it is still held. An ACK carrying that live token was observed after the
+      # wake, and the controller deletes the ACK on any later power edge,
+      # override or mismatch. Re-using it removes a second serial wait.
+      [ -n "$_rf_so" ] && [ "$_rf_so" != - ] || return 1
+      refresh_lease sofod
+      [ "$REFRESH_LEASE" = "$_rf_so" ] ;;
+    sofod) [ "$_rf_so" = "$REFRESH_FOD_TOKEN" ] ;;
+    *) return 1 ;;
+  esac
+}
+refresh_fod_wait() {   # source; bounded by the request's uptime deadline, always fail open
+  case "$1" in hbm|sofod) ;; *) return 0 ;; esac
+  [ -n "$REFRESH_FOD_TOKEN" ] || return 0
+  # Skip the wait when no live controller has discovered a 120 Hz mode. An
+  # ACK requires observing the requested mode/rate, not just a Binder reply.
+  refresh_fod_live || return 0
+  while :; do
+    refresh_fod_acked "$1" && return 0
+    refresh_now
+    [ "$REFRESH_NOW" -lt "${REFRESH_FOD_DEADLINE:-0}" ] || return 0
+    sleep 0.01 || return 0
+  done
+}
+refresh_fod_begin() {   # hbm | sofod; always fail open (never break fingerprint capture)
+  case "$1" in hbm|sofod) ;; *) return 0 ;; esac
+  refresh_fod_request "$1"
+  refresh_fod_wait "$1"
+  return 0
+}
+# --- end fast FOD handshake ---
 refresh_fod_end() {   # source token; a stale watchdog/replay cannot release a newer lease
   case "$1" in hbm|sofod) ;; *) return 0 ;; esac
   [ -n "$2" ] || return 0
